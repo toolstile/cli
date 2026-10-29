@@ -1,4 +1,4 @@
-# Publishes `toolstile` and `@toolstile/cli` to npm with trusted publishing (OIDC).
+# Publishes `toolstile` to npm with trusted publishing (OIDC).
 # No npm token is stored in this repository; npm verifies this workflow instead.
 # Release: bump "version" in package.json, commit, then push a matching tag (v1.2.3).
 name: Publish
@@ -41,15 +41,11 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
-      - name: Publish toolstile and @toolstile/cli
+      - name: Publish toolstile
         run: |
           version="$(node -p 'require("./package.json").version')"
-          for name in toolstile @toolstile/cli; do
-            if npm view "$name@$version" version >/dev/null 2>&1; then
-              echo "$name@$version is already published"
-              continue
-            fi
-            npm pkg set name="$name"
+          if npm view "toolstile@$version" version >/dev/null 2>&1; then
+            echo "toolstile@$version is already published"
+          else
             npm publish --access public --ignore-scripts
-          done
-          npm pkg set name=toolstile
+          fi
