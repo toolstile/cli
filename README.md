@@ -6,6 +6,8 @@ Check the MCP server configs your AI agents use, in one command:
 npx toolstile audit
 ```
 
+The same package is also published as `@toolstile/cli` (`npx @toolstile/cli audit`).
+
 It reads the configs of Claude Code, Claude Desktop, Cursor, Codex, VS Code,
 Windsurf, Gemini CLI and Cline and grades them for:
 
@@ -99,6 +101,12 @@ credentials off your machines and lets you choose which tools each agent can use
 The audit works on its own and does not require a Toolstile account.
 
 Questions and reports: support@toolstile.com.
+
+## Releases
+
+Both npm packages are published by [GitHub Actions](.github/workflows/publish.yml)
+with npm trusted publishing and provenance, so each release links back to the
+commit and workflow that built it. No npm token is stored anywhere.
 
 ## License
 
