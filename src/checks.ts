@@ -163,7 +163,16 @@ function broadRoots(s: ServerEntry, home: string): string[] {
     .filter((a) => a === "/" || /^[A-Za-z]:\\?$/.test(a) || homes.has(a) || homes.has(a.replace(/\/+$/, "")));
 }
 
-const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 } as const;
+const SEVERITY_ORDER = { high: 0, medium: 1, low: 2, info: 3 } as const;
+
+/** Toolstile's own gateway is meant to be added to every client. */
+const TOOLSTILE = /^url:([a-z0-9-]+\.)*toolstile\.com\//i;
+
+/** A path for a shell command: `~/...` under the home folder, single-quoted when needed. */
+export function shellPath(path: string, home: string): string {
+  const quote = (p: string) => (/^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
+  return home && path.startsWith(home + "/") ? `~/${quote(path.slice(home.length + 1))}` : quote(path);
+}
 
 export function runChecks(d: Discovery, home: string): Finding[] {
   const findings: Finding[] = [];
@@ -172,7 +181,10 @@ export function runChecks(d: Discovery, home: string): Finding[] {
   // Plaintext secrets, grouped per server.
   const byServer = new Map<ServerEntry, Secret[]>();
   for (const s of secrets) byServer.set(s.server, [...(byServer.get(s.server) ?? []), s]);
+  const counted = new Set<string>();
   for (const [server, list] of byServer) {
+    const fresh = new Set(list.map((s) => s.hash).filter((h) => !counted.has(h)));
+    fresh.forEach((h) => counted.add(h));
     const kinds = [...new Set(list.map((s) => s.kind))].join(", ");
     const one = list.length === 1;
     const what = one ? `${/^[aeiou]/i.test(kinds) ? "An" : "A"} ${kinds} is` : `${list.length} secrets (${kinds}) are`;
@@ -183,6 +195,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       detail: `${what} written directly into the config file. Anything that can read the file, including backups, dotfile syncs and other tools, can use ${one ? "it" : "them"}.`,
       fix: "Reference an environment variable instead (for example ${API_TOKEN}, or \"Bearer ${API_TOKEN}\" in a header), or use the server's OAuth sign-in. Rotate the secret if the file was ever shared or synced.",
       locations: list.map((s) => s.location),
+      // A secret pasted into several files is one leak; the copies are scored by copied-secret.
+      weight: 10 * fresh.size,
     });
   }
 
@@ -199,20 +213,23 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       detail: `One credential is pasted into ${files.size} separate config files (${[...new Set(list.map((s) => CLIENT_NAMES[s.server.client]))].join(", ")}). Rotating or revoking it means finding every copy.`,
       fix: "Keep one copy in your environment or keychain and reference it from each client, or route the clients through one gateway.",
       locations: list.map((s) => s.location),
+      weight: 2,
     });
   }
 
-  // Config files that hold secrets but are readable by other users.
+  // Config files that hold secrets and that other accounts on the machine can actually reach.
   const secretFiles = new Set(secrets.map((s) => s.location.file));
   for (const f of d.files) {
-    if (f.mode === undefined || !secretFiles.has(f.path) || (f.mode & 0o077) === 0) continue;
+    if (f.mode === undefined || !f.exposure || !secretFiles.has(f.path)) continue;
+    const [open, who] = f.exposure === "others" ? ["everyone", "every account on this machine"] : ["its group", "other accounts in that group"];
     findings.push({
       rule: "readable-config",
       severity: "medium",
-      title: "Config file with secrets is readable by other users",
-      detail: `This file contains plaintext secrets and has permissions ${f.mode.toString(8).padStart(3, "0")}.`,
-      fix: `Restrict it to your user: chmod 600 "${f.path}"`,
+      title: "Config file with secrets is readable by other accounts",
+      detail: `This file holds plaintext secrets and has permissions ${f.mode.toString(8).padStart(3, "0")}, and every folder above it is open to ${open}, so ${who} can read it.`,
+      fix: `Restrict it to your user: chmod 600 ${shellPath(f.path, home)}`,
       locations: [{ file: f.path, pointer: "(file permissions)" }],
+      weight: 4,
     });
   }
 
@@ -228,6 +245,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
             detail: `${u.host} is reached over plain http://, so requests, tool results and any credentials travel unencrypted.`,
             fix: "Use the server's https:// endpoint.",
             locations: [at(s, "url")],
+            weight: 10,
           });
         }
       } catch {
@@ -248,6 +266,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
             ? `Pin an image digest or exact tag, for example ${pkg.name}:<version>.`
             : `Pin an exact version, for example ${pkg.name}${pkg.registry === "pypi" ? "==" : "@"}<version>.`,
         locations: [at(s, "args", String(Math.max(0, pkg.argIndex - 1)))],
+        weight: 4,
       });
     }
 
@@ -262,6 +281,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
           detail: `The server runs with ${[...new Set(risky)].join(", ")}, which gives it effective control of the host.`,
           fix: "Remove --privileged and the Docker socket mount unless the server truly needs them.",
           locations: [at(s, "args")],
+          weight: 10,
         });
       }
     }
@@ -275,6 +295,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
         detail: `Allowed root ${roots.join(", ")} includes SSH keys, cloud credentials and every other config file.`,
         fix: "Allow only the project folders the agent needs.",
         locations: [at(s, "args")],
+        weight: 4,
       });
     }
 
@@ -286,6 +307,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
         detail: `Auto-approved: ${s.autoApproved.slice(0, 6).join(", ")}${s.autoApproved.length > 6 ? ", …" : ""}. A prompt injection in any content the agent reads can call these.`,
         fix: "Keep auto-approval to read-only tools.",
         locations: [at(s)],
+        weight: 1,
       });
     }
   }
@@ -301,41 +323,41 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       detail: `Permission rule ${a.subject} skips the confirmation prompt, including for write and delete tools. A prompt injection in a web page, issue or email the agent reads can call them.`,
       fix: "Allow specific read-only tools (mcp__server__tool) instead of whole servers.",
       locations: [a.location],
+      weight: 4,
     });
   }
 
-  // The same server configured separately in several clients.
+  // The same server configured separately in several clients. Context only: remote servers need an
+  // entry per client, and copies that carry credentials are already scored by copied-secret.
   const byIdentity = new Map<string, ServerEntry[]>();
   for (const s of d.servers) {
     const id = identityOf(s);
-    if (id) byIdentity.set(id, [...(byIdentity.get(id) ?? []), s]);
+    if (id && !TOOLSTILE.test(id)) byIdentity.set(id, [...(byIdentity.get(id) ?? []), s]);
   }
   for (const list of byIdentity.values()) {
     const clients = [...new Set(list.map((s) => s.client))] as ClientId[];
     if (clients.length < 2) continue;
     findings.push({
       rule: "duplicated-server",
-      severity: "low",
+      severity: "info",
       title: `${list[0]!.name} is set up separately in ${clients.length} clients`,
-      detail: `Configured in ${clients.map((c) => CLIENT_NAMES[c]).join(", ")}. Each copy has its own credentials and settings to keep in sync, rotate and revoke.`,
-      fix: "Configure it once and share it across agents.",
+      detail: `Configured in ${clients.map((c) => CLIENT_NAMES[c]).join(", ")}. Each copy has its own settings and sign-in to keep in sync and revoke.`,
+      fix: "Nothing to fix; listed so you know where each copy lives.",
       locations: list.map((s) => at(s)),
+      weight: 0,
     });
   }
 
   return findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 }
 
-const PENALTY = { high: 15, medium: 6, low: 2 } as const;
-const CAP = { high: 60, medium: 30, low: 10 } as const;
-
+/**
+ * 100 / (1 + weight / 50): one leaked secret (10) scores 83, four score about 50, and the score
+ * keeps separating bad setups from worse ones instead of bottoming out at zero.
+ */
 export function score(findings: Finding[]): { score: number; grade: string } {
-  let total = 100;
-  for (const sev of ["high", "medium", "low"] as const) {
-    const n = findings.filter((f) => f.severity === sev).length;
-    total -= Math.min(n * PENALTY[sev], CAP[sev]);
-  }
-  total = Math.max(0, total);
-  const grade = total >= 90 ? "A" : total >= 80 ? "B" : total >= 65 ? "C" : total >= 50 ? "D" : "F";
+  const weight = findings.reduce((n, f) => n + f.weight, 0);
+  const total = Math.round(100 / (1 + weight / 50));
+  const grade = total >= 90 ? "A" : total >= 75 ? "B" : total >= 60 ? "C" : total >= 40 ? "D" : "F";
   return { score: total, grade };
 }

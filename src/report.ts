@@ -14,10 +14,11 @@ export function style(color: boolean): Style {
   const yellow = wrap(33, 39);
   const blue = wrap(34, 39);
   const green = wrap(32, 39);
+  const dim = wrap(2, 22);
   return {
     bold: wrap(1, 22),
-    dim: wrap(2, 22),
-    sev: (sev, s) => (sev === "high" ? red(s) : sev === "medium" ? yellow(s) : blue(s)),
+    dim,
+    sev: (sev, s) => (sev === "high" ? red(s) : sev === "medium" ? yellow(s) : sev === "low" ? blue(s) : dim(s)),
     grade: (g, s) => (g === "A" || g === "B" ? green(s) : g === "C" ? yellow(s) : red(s)),
   };
 }
@@ -32,11 +33,37 @@ export function counts(findings: Finding[]) {
     high: findings.filter((f) => f.severity === "high").length,
     medium: findings.filter((f) => f.severity === "medium").length,
     low: findings.filter((f) => f.severity === "low").length,
+    info: findings.filter((f) => f.severity === "info").length,
     secrets: findings.filter((f) => f.rule === "plaintext-secret").reduce((n, f) => n + f.locations.length, 0),
   };
 }
 
-export function renderReport(r: AuditResult, home: string, s: Style): string {
+/**
+ * Returns a copy safe to post publicly: the home folder becomes `~`, the scanned project folder
+ * becomes `<project>`, and project paths inside pointers (Claude Code's `projects["/path"]`) are hidden.
+ */
+export function redact(r: AuditResult, home: string, project: string | null): AuditResult {
+  const scrub = (text: string) => {
+    let out = text.replace(/projects\["(?:[^"\\]|\\.)*"\]/g, 'projects["…"]');
+    if (project) out = out.split(project).join("<project>");
+    if (home) out = out.split(home).join("~");
+    return out;
+  };
+  return {
+    ...r,
+    files: r.files.map((f) => ({ ...f, path: scrub(f.path) })),
+    unreadable: r.unreadable.map((u) => ({ ...u, path: scrub(u.path), error: scrub(u.error) })),
+    findings: r.findings.map((f) => ({
+      ...f,
+      title: scrub(f.title),
+      detail: scrub(f.detail),
+      fix: scrub(f.fix),
+      locations: f.locations.map((l) => ({ file: scrub(l.file), pointer: scrub(l.pointer) })),
+    })),
+  };
+}
+
+export function renderReport(r: AuditResult, home: string, s: Style, redacted = false): string {
   const lines: string[] = [];
   lines.push("", `${s.bold("toolstile audit")} ${s.dim("· local MCP config check · nothing leaves this machine")}`, "");
 
@@ -58,15 +85,18 @@ export function renderReport(r: AuditResult, home: string, s: Style): string {
 
   if (r.grade !== null) {
     const c = counts(r.findings);
-    const summary = r.findings.length
-      ? [c.high && s.sev("high", `${c.high} high`), c.medium && s.sev("medium", `${c.medium} medium`), c.low && s.sev("low", `${c.low} low`)]
-          .filter(Boolean)
-          .join(s.dim(" · "))
-      : "no issues found";
+    const parts = [
+      c.high && s.sev("high", `${c.high} high`),
+      c.medium && s.sev("medium", `${c.medium} medium`),
+      c.low && s.sev("low", `${c.low} low`),
+    ].filter(Boolean);
+    const summary = parts.length ? parts.join(s.dim(" · ")) : "no issues found";
     lines.push(`  ${s.bold(s.grade(r.grade, `Grade ${r.grade}`))}  ${s.dim(`${r.score}/100`)}   ${summary}`, "");
   }
 
-  for (const f of r.findings) {
+  const issues = r.findings.filter((f) => f.severity !== "info");
+  const info = r.findings.filter((f) => f.severity === "info");
+  for (const f of issues) {
     const tag = s.sev(f.severity, f.severity.toUpperCase().padEnd(6));
     lines.push(`${tag} ${s.bold(f.title)}`);
     lines.push(`       ${f.detail}`);
@@ -75,16 +105,20 @@ export function renderReport(r: AuditResult, home: string, s: Style): string {
     if (f.locations.length > shown.length) lines.push(s.dim(`       … and ${f.locations.length - shown.length} more`));
     lines.push(`       ${s.dim("Fix:")} ${f.fix}`, "");
   }
+  if (info.length) {
+    lines.push(s.dim("Also set up in more than one client (not scored):"));
+    for (const f of info) lines.push(s.dim(`  ${f.title.replace(/ is set up separately in (\d+) clients$/, "")}: ${f.detail.split(".")[0]!.replace(/^Configured in /, "")}`));
+    lines.push("");
+  }
 
-  lines.push(
-    s.dim("Secret values are never printed. Share your grade (no secrets, no paths): npx toolstile audit --card"),
-    s.dim("Keep credentials off your machines and control each agent's tools: https://toolstile.com/?ref=cli"),
-    "",
-  );
+  lines.push(s.dim("Secret values are never printed."));
+  if (!redacted) lines.push(s.dim("Posting this? Run with --redact to hide your paths, or --card for an image with only the grade."));
+  else lines.push(s.dim("Share an image with only the grade: npx toolstile audit --card"));
+  lines.push(s.dim("Keep credentials off your machines and control each agent's tools: https://toolstile.com/?ref=cli"), "");
   return lines.join("\n");
 }
 
-/** JSON output for scripts. Paths are included; secret values never are. */
+/** JSON output for scripts. Paths are included unless redacted; secret values never are. */
 export function renderJson(r: AuditResult): string {
   return JSON.stringify(r, null, 2) + "\n";
 }

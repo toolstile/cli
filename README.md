@@ -17,19 +17,21 @@ Windsurf, Gemini CLI and Cline and grades them for:
 | Remote servers reached over plain `http://` | high |
 | Containers run with `--privileged` or the Docker socket | high |
 | The same credential pasted into several clients' configs | medium |
-| Config files holding secrets that other users can read | medium |
+| Config files holding secrets that other accounts can reach (file and folder permissions) | medium |
 | `npx`, `uvx` and `docker` servers that run whatever version is newest | medium |
 | Filesystem servers that can read your whole home folder or disk | medium |
 | Permission rules that approve every tool of a server without asking | medium |
 | Tools on a client's auto-approve list | low |
-| The same server set up separately in several clients | low |
+
+It also lists servers set up separately in several clients. That is context, not
+scored: remote servers need an entry per client.
 
 ```text
 toolstile audit · local MCP config check · nothing leaves this machine
 
 Scanned 4 files from Claude Code, Cursor, Codex: 10 MCP servers.
 
-  Grade C  67/100   1 high · 2 medium · 3 low
+  Grade B  77/100   1 high · 1 medium · 1 low
 
 HIGH   Plaintext secret in github (Cursor)
        A GitHub token is written directly into the config file. Anything that can
@@ -55,6 +57,7 @@ HIGH   Plaintext secret in github (Cursor)
 --json              Print results as JSON
 --card [file]       Write a shareable grade card (default toolstile-audit.png;
                     use a .svg name for SVG). Contains only the grade and counts.
+--redact            Hide your home folder and project paths, for posting the output
 --project <dir>     Also scan project configs in <dir> (default: current directory)
 --no-project        Scan only user-level configs
 --fail-on <level>   Exit with code 1 if any finding is at or above high, medium or low
@@ -63,6 +66,15 @@ HIGH   Plaintext secret in github (Cursor)
 `--fail-on high` makes it usable in CI or a pre-commit hook for repositories that
 check in `.mcp.json`, `.cursor/mcp.json` or `.vscode/mcp.json`.
 
+## Scoring
+
+Each distinct problem has a weight: 10 for a leaked secret, plain-http remote or
+privileged container; 4 for readable secret files, unpinned packages, broad
+filesystem access and whole-server auto-approval; 2 for each copied secret; 1 for
+auto-approved tools. A secret pasted into several files counts as one leak. The
+score is `100 / (1 + weight / 50)`: one leaked secret scores 83 (B), four score
+about 56 (D). Grades: A 90+, B 75+, C 60+, D 40+, F below 40.
+
 ## Share your grade
 
 ```sh
@@ -70,7 +82,8 @@ npx toolstile audit --card
 ```
 
 writes a 1200×630 image with your grade and counts (no server names, paths or
-values) and prints a ready-to-post link.
+values) and prints a ready-to-post link. To post the text report instead, add
+`--redact` so it shows `~` and `<project>` in place of your folders.
 
 ## Files it reads
 

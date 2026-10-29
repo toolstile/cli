@@ -1,4 +1,5 @@
-export type Severity = "high" | "medium" | "low";
+/** `info` findings are context only and do not affect the score. */
+export type Severity = "high" | "medium" | "low" | "info";
 
 export type ClientId =
   | "claude-code"
@@ -24,6 +25,8 @@ export interface ConfigFile {
   data: unknown;
   /** Unix permission bits, when available. */
   mode?: number;
+  /** Who besides the owner can read the file, counting the folders above it. */
+  exposure?: "group" | "others" | null;
 }
 
 export interface ServerEntry {
@@ -58,6 +61,8 @@ export interface Finding {
   detail: string;
   fix: string;
   locations: Location[];
+  /** Points this finding takes off the score; repeats of one root cause count once. */
+  weight: number;
 }
 
 export interface AuditResult {

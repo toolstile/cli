@@ -1,6 +1,6 @@
 {
   "name": "toolstile",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Audit the MCP server configs your AI agents use for plaintext secrets, unpinned packages, auto-approved tools and duplicated setups. Local and read-only.",
   "keywords": [
     "mcp",

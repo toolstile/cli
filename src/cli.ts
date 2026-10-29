@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { renderCard, shareText, shareUrl } from "./card.js";
 import { audit } from "./index.js";
-import { renderJson, renderReport, style } from "./report.js";
+import { redact, renderJson, renderReport, style } from "./report.js";
 import type { Severity } from "./types.js";
 
 const HELP = `toolstile: audit the MCP server configs your AI agents use
@@ -24,6 +24,7 @@ Options
   --json              Print results as JSON
   --card [file]       Write a shareable grade card (default toolstile-audit.png;
                       use a .svg name for SVG). Contains only the grade and counts.
+  --redact            Hide your home folder and project paths, for posting the output
   --project <dir>     Also scan project configs in <dir> (default: current directory)
   --no-project        Scan only user-level configs
   --fail-on <level>   Exit with code 1 if any finding is at or above high, medium or low
@@ -38,13 +39,14 @@ function version(): string {
 
 interface Args {
   json: boolean;
+  redact: boolean;
   card: string | null;
   project: string | null;
   failOn: Severity | null;
 }
 
 function parseArgs(argv: string[]): Args | "help" | "version" {
-  const args: Args = { json: false, card: null, project: process.cwd(), failOn: null };
+  const args: Args = { json: false, redact: false, card: null, project: process.cwd(), failOn: null };
   const rest = [...argv];
   if (rest[0] === "audit") rest.shift();
   for (let i = 0; i < rest.length; i++) {
@@ -65,6 +67,9 @@ function parseArgs(argv: string[]): Args | "help" | "version" {
         return "version";
       case "--json":
         args.json = true;
+        break;
+      case "--redact":
+        args.redact = true;
         break;
       case "--card": {
         const next = inline ?? rest[i + 1];
@@ -113,7 +118,7 @@ async function writeCard(path: string, svg: string): Promise<string> {
   }
 }
 
-const RANK: Record<Severity, number> = { high: 3, medium: 2, low: 1 };
+const RANK: Record<Severity, number> = { high: 3, medium: 2, low: 1, info: 0 };
 
 async function main(): Promise<number> {
   let args: ReturnType<typeof parseArgs>;
@@ -133,12 +138,13 @@ async function main(): Promise<number> {
   }
 
   const home = homedir();
-  const result = audit({ home, cwd: args.project });
+  const raw = audit({ home, cwd: args.project });
+  const result = args.redact ? redact(raw, home, args.project) : raw;
   const color = !args.json && process.stdout.isTTY === true && !process.env.NO_COLOR;
   const s = style(color);
 
   if (args.json) process.stdout.write(renderJson(result));
-  else process.stdout.write(renderReport(result, home, s));
+  else process.stdout.write(renderReport(result, home, s, args.redact));
 
   if (args.card) {
     if (result.grade === null) {

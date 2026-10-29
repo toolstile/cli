@@ -5,7 +5,9 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderCard, shareText } from "../src/card.js";
 import { audit } from "../src/index.js";
-import { renderJson, renderReport, style } from "../src/report.js";
+import { redact, renderJson, renderReport, style } from "../src/report.js";
+import { score, shellPath } from "../src/checks.js";
+import { exposureOf } from "../src/sources.js";
 
 const GITHUB_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const API_KEY = "Bearer " + "q8W7e6R5t4Y3u2I1o0P9a8S7d6F5";
@@ -79,7 +81,11 @@ describe("audit", () => {
     expect(rules(r).filter((x) => x === "plaintext-secret")).toHaveLength(2);
     const copied = r.findings.find((f) => f.rule === "copied-secret");
     expect(copied?.title).toBe("Same authorization header copied into 2 files");
-    expect(r.findings.find((f) => f.rule === "duplicated-server")?.title).toBe("search is set up separately in 2 clients");
+    const dup = r.findings.find((f) => f.rule === "duplicated-server");
+    expect(dup?.title).toBe("search is set up separately in 2 clients");
+    expect(dup?.severity).toBe("info");
+    // One leaked secret in two files: 10 for the leak, 2 for the copy, nothing for the duplicate.
+    expect(r.score).toBe(81);
   });
 
   it("reads Claude Code project servers and project .mcp.json", () => {
@@ -174,9 +180,18 @@ describe("audit", () => {
     expect(r.findings[0]!.detail).toContain("credential in URL query");
   });
 
-  it("flags readable config files that hold secrets", () => {
+  it("does not flag a 644 file inside a private folder", () => {
+    // mkdtemp folders are 0700, like ~/Library on macOS.
     put(join(home, ".cursor", "mcp.json"), { mcpServers: { gh: { url: "https://api.example.com/mcp", headers: { Authorization: API_KEY } } } }, 0o644);
-    expect(rules(run())).toContain("readable-config");
+    expect(rules(run())).not.toContain("readable-config");
+  });
+
+  it("works out who can reach a file through its folders", () => {
+    expect(exposureOf(0o644, [0o755, 0o755])).toBe("others");
+    expect(exposureOf(0o644, [0o750, 0o755])).toBe("group"); // macOS home: drwxr-x--- staff
+    expect(exposureOf(0o644, [0o700, 0o750, 0o755])).toBeNull(); // ~/Library
+    expect(exposureOf(0o600, [0o755])).toBeNull();
+    expect(exposureOf(0o640, [0o701])).toBeNull(); // group cannot traverse
   });
 
   it("reports unparseable files without failing", () => {
@@ -184,6 +199,42 @@ describe("audit", () => {
     const r = run();
     expect(r.unreadable).toHaveLength(1);
     expect(r.grade).toBeNull();
+  });
+
+  it("does not list Toolstile's own endpoint as a duplicate", () => {
+    put(join(home, ".cursor", "mcp.json"), { mcpServers: { toolstile: { url: "https://toolstile.com/mcp" }, cal: { url: "https://mcp.cal.com/mcp" } } });
+    put(join(home, ".claude.json"), { mcpServers: { toolstile: { type: "http", url: "https://toolstile.com/mcp" }, cal: { type: "http", url: "https://mcp.cal.com/mcp/" } } });
+    const r = run();
+    expect(r.findings.map((f) => f.title)).toEqual(["cal is set up separately in 2 clients"]);
+    expect(r.grade).toBe("A");
+    expect(renderReport(r, home, style(false))).toContain("Also set up in more than one client (not scored):\n  cal: Claude Code, Cursor");
+  });
+
+  it("scores distinct problems on a curve", () => {
+    const f = (weight: number) => ({ rule: "x", severity: "high" as const, title: "", detail: "", fix: "", locations: [], weight });
+    expect(score([])).toEqual({ score: 100, grade: "A" });
+    expect(score([f(10)])).toEqual({ score: 83, grade: "B" });
+    expect(score([f(10), f(10)])).toEqual({ score: 71, grade: "C" });
+    expect(score([f(10), f(10), f(10), f(10)])).toEqual({ score: 56, grade: "D" });
+    expect(score([f(200)]).score).toBe(20);
+  });
+
+  it("hides home and project paths with redact", () => {
+    put(join(home, ".claude.json"), {
+      projects: { [join(home, "Work", "acme", "app")]: { mcpServers: { render: { type: "http", url: "https://mcp.render.com/mcp", headers: { Authorization: API_KEY } } } } },
+    });
+    put(join(project, ".mcp.json"), { mcpServers: { db: { command: "npx", args: ["-y", "db-mcp"] } } });
+    const out = renderJson(redact(run(), home, project)) + renderReport(redact(run(), home, project), home, style(false), true);
+    expect(out).not.toContain(home);
+    expect(out).not.toContain("acme");
+    expect(out).toContain('projects[\\"…\\"].mcpServers.render');
+    expect(out).toContain("<project>/.mcp.json");
+  });
+
+  it("writes shell-safe chmod paths", () => {
+    expect(shellPath("/Users/me/.claude.json", "/Users/me")).toBe("~/.claude.json");
+    expect(shellPath("/Users/me/Library/Application Support/x.json", "/Users/me")).toBe("~/'Library/Application Support/x.json'");
+    expect(shellPath("/etc/it's.json", "/Users/me")).toBe("'/etc/it'\\''s.json'");
   });
 
   it("grades a clean setup A", () => {

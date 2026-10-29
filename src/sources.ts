@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseConfig } from "./parse.js";
 import type { ApprovalSetting, ClientId, ConfigFile, ServerEntry } from "./types.js";
 
@@ -155,6 +155,32 @@ function claudeApprovals(file: ConfigFile): ApprovalSetting[] {
   return out;
 }
 
+/**
+ * Who besides the owner can read a file, given its mode and the modes of every folder above it.
+ * A group or other user needs read on the file and execute (traverse) on each folder.
+ */
+export function exposureOf(fileMode: number, ancestorModes: number[]): "group" | "others" | null {
+  if (fileMode & 0o004 && ancestorModes.every((m) => m & 0o001)) return "others";
+  if (fileMode & 0o040 && ancestorModes.every((m) => m & 0o010)) return "group";
+  return null;
+}
+
+function ancestorModes(path: string): number[] {
+  const modes: number[] = [];
+  let dir = dirname(path);
+  for (;;) {
+    try {
+      modes.push(statSync(dir).mode & 0o777);
+    } catch {
+      // An unreadable folder is not traversable by us either; treat it as closed.
+      modes.push(0);
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return modes;
+    dir = parent;
+  }
+}
+
 export interface Discovery {
   files: ConfigFile[];
   unreadable: { client: ClientId; path: string; error: string }[];
@@ -182,7 +208,8 @@ export function discover(opts: ScanOptions): Discovery {
       result.unreadable.push({ client: c.client, path: c.path, error: (error as Error).message });
       continue;
     }
-    const file: ConfigFile = { client: c.client, path: c.path, data, mode };
+    const exposure = mode === undefined ? undefined : exposureOf(mode, ancestorModes(c.path));
+    const file: ConfigFile = { client: c.client, path: c.path, data, mode, exposure };
     result.files.push(file);
     if (!isObject(data)) continue;
 
