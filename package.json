@@ -1,0 +1,55 @@
+{
+  "name": "toolstile",
+  "version": "0.1.0",
+  "description": "Audit the MCP server configs your AI agents use for plaintext secrets, unpinned packages, auto-approved tools and duplicated setups. Local and read-only.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "audit",
+    "claude",
+    "cursor",
+    "codex",
+    "secrets"
+  ],
+  "homepage": "https://github.com/toolstile/cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/toolstile/cli.git"
+  },
+  "bugs": {
+    "email": "support@toolstile.com"
+  },
+  "author": "Akshit Kr Nagpal <hello@akshit.io> (https://akshit.io)",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "toolstile": "dist/cli.js"
+  },
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm typecheck && pnpm build && pnpm test"
+  },
+  "dependencies": {
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  },
+  "packageManager": "pnpm@11.20.0",
+  "optionalDependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}
