@@ -1,4 +1,14 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -85,6 +95,24 @@ describe("agent config entries", () => {
     put(cursor.path, JSON.stringify({ mcpServers: { toolstile: { url: "https://toolstile.com/mcp" } } }));
     expect(writeEntry(cursor, null)).toBe("unchanged");
     expect(readEntry(cursor)).toEqual({ url: "https://toolstile.com/mcp" });
+    expect(writeEntry(cursor, command("cursor"))).toBe("replaced");
+  });
+
+  it("writes through a symlinked config instead of replacing the link", () => {
+    const t = target("cursor");
+    const real = join(home, "dotfiles", "mcp.json");
+    put(real, "{}");
+    mkdirSync(dirname(t.path), { recursive: true });
+    symlinkSync(real, t.path);
+    writeEntry(t, command("cursor"));
+    expect(lstatSync(t.path).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(real, "utf8")).mcpServers.toolstile.command).toBe("npx");
+  });
+
+  it("refuses Codex entries it cannot edit instead of crashing", () => {
+    const t = target("codex");
+    put(t.path, "[mcp_servers]\ntoolstile = { url = \"https://toolstile.com/mcp\" }\n");
+    expect(() => writeEntry(t, command("codex"))).toThrow(ManualEditError);
   });
 
   it("starts npx through cmd on Windows", () => {
@@ -105,13 +133,14 @@ describe("credentials file", () => {
   it("is owner-only and survives a round trip", () => {
     const state = loadState({ home, env: env() });
     expect(state.server).toBe("https://toolstile.com");
-    state.agents.cursor = { id: "a", workspaceId: "w", label: "Cursor", token: "ts_x" };
+    state.agents.cursor = { id: "a", workspaceId: "w", server: "https://toolstile.com", label: "Cursor", token: "ts_x" };
     saveState(state, { home, env: env() });
     expect(statSync(statePath({ home, env: env() })).mode & 0o777).toBe(0o600);
     expect(statSync(join(home, "cfg")).mode & 0o777).toBe(0o700);
     expect(loadState({ home, env: env() }).agents.cursor?.token).toBe("ts_x");
-    expect(loadState({ home, env: { ...env(), TOOLSTILE_URL: "https://staging.example" } }).server).toBe(
-      "https://staging.example",
+    // A project's environment cannot point saved tokens at another server.
+    expect(loadState({ home, env: { ...env(), TOOLSTILE_URL: "https://evil.example" } }).server).toBe(
+      "https://toolstile.com",
     );
   });
 
@@ -199,7 +228,9 @@ describe("auth and setup", () => {
     });
     const { ctx, output } = context(api);
     expect(await login(ctx, { browser: false })).toBe(0);
-    expect(output()).toContain("https://t.test/device?user_code=ABCDEFGH");
+    // Only the bare page: the code is typed there, never carried in the link.
+    expect(output()).toContain("https://t.test/device\n");
+    expect(output()).not.toContain("user_code=");
     expect(output()).toContain("ABCD-EFGH");
     expect(loadState({ home, env: env() }).session).toMatchObject({ token: "session", email: "me@test.invalid" });
   });
@@ -237,6 +268,26 @@ describe("auth and setup", () => {
     await expect(setup(ctx, {})).rejects.toThrow(/auth login/);
   });
 
+  it("keeps tokens on the server that issued them", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const servers: string[] = [];
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    ctx.api = (server) => {
+      servers.push(server);
+      return api;
+    };
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor" });
+    ctx.env = { ...ctx.env, TOOLSTILE_URL: "https://other.example" };
+    await login(ctx, { browser: false });
+    // The old session is signed out where it was issued; the new one belongs to the new server.
+    expect(servers).toEqual(["https://toolstile.com", "https://toolstile.com", "https://other.example", "https://toolstile.com"]);
+    const state = loadState({ home, env: ctx.env });
+    expect(state.session?.server).toBe("https://other.example");
+    expect(state.agents.cursor?.server).toBe("https://toolstile.com");
+  });
+
   it("re-creates an agent that was deleted from the dashboard", async () => {
     mkdirSync(join(home, ".cursor"));
     const { api, agents, calls } = fakeApi();
@@ -267,6 +318,8 @@ describe("stdio proxy", () => {
       output,
       log: (m) => logs.push(m),
       fetch: async (_url, init) => {
+        // The server-initiated stream is optional; these tests use none.
+        if (init?.method === "GET") return new Response(null, { status: 405 });
         requests.push(init ?? {});
         const next = responses.shift();
         return next ? next(init ?? {}) : new Response(null, { status: 405 });
@@ -305,6 +358,35 @@ describe("stdio proxy", () => {
     expect(headers["Mcp-Session-Id"]).toBe("s1");
     expect(headers["Mcp-Protocol-Version"]).toBe("2025-06-18");
     expect(requests.at(-1)!.method).toBe("DELETE");
+  });
+
+  it("opens a new session when the gateway has forgotten the old one", async () => {
+    const init = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const { written, requests } = await run(
+      [
+        () => Response.json({ jsonrpc: "2.0", id: 1, result: {} }, { headers: { "Mcp-Session-Id": "s1" } }),
+        () => new Response("Session not found", { status: 404 }),
+        () => Response.json({ jsonrpc: "2.0", id: 1, result: {} }, { headers: { "Mcp-Session-Id": "s2" } }),
+        () => new Response(null, { status: 202 }),
+        () => Response.json({ jsonrpc: "2.0", id: 2, result: { tools: [] } }),
+      ],
+      [init, JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })],
+    );
+    // The replayed initialize reply is not shown to the agent a second time.
+    expect(written).toEqual([
+      { jsonrpc: "2.0", id: 1, result: {} },
+      { jsonrpc: "2.0", id: 2, result: { tools: [] } },
+    ]);
+    expect((requests[4]!.headers as Record<string, string>)["Mcp-Session-Id"]).toBe("s2");
+    expect(requests.every((r) => r.redirect === "error")).toBe(true);
+  });
+
+  it("answers a request whose stream ended without a reply", async () => {
+    const { written } = await run(
+      [() => new Response("event: message\n\n", { headers: { "Content-Type": "text/event-stream" } })],
+      [JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call" })],
+    );
+    expect(written).toEqual([{ jsonrpc: "2.0", id: 9, error: { code: -32000, message: expect.any(String) } }]);
   });
 
   it("answers requests with an error the agent can show when access is revoked", async () => {

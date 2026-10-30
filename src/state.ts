@@ -9,6 +9,8 @@ export interface AgentLink {
   /** The agent's authorization ID in Toolstile, valid in one workspace. */
   id: string;
   workspaceId: string;
+  /** The Toolstile origin that issued the token; the proxy sends it nowhere else. */
+  server: string;
   label: string;
   /** The agent's own gateway token; only `toolstile mcp proxy` reads it. */
   token: string;
@@ -16,8 +18,9 @@ export interface AgentLink {
 
 /** Everything `auth` and `mcp` keep on this machine, in one owner-only file. */
 export interface State {
+  /** The origin `auth login` last signed in to. */
   server: string;
-  session?: { token: string; email: string; expiresAt: string };
+  session?: { token: string; email: string; expiresAt: string; server: string };
   workspace?: { id: string; slug: string; name: string };
   device?: { id: string; label: string };
   agents: Partial<Record<ClientId, AgentLink>>;
@@ -38,9 +41,12 @@ export function stateDir({ home = homedir(), env = process.env, platform = proce
 
 export const statePath = (opts?: StateEnv) => join(stateDir(opts), "credentials.json");
 
+/**
+ * The saved server always wins over `TOOLSTILE_URL`, which only picks the server for a new
+ * `auth login`: an environment variable set by a project must not redirect saved tokens.
+ */
 export function loadState(opts?: StateEnv): State {
-  const env = opts?.env ?? process.env;
-  const fallback: State = { server: env.TOOLSTILE_URL ?? DEFAULT_SERVER, agents: {} };
+  const fallback: State = { server: DEFAULT_SERVER, agents: {} };
   let text: string;
   try {
     text = readFileSync(statePath(opts), "utf8");
@@ -50,7 +56,7 @@ export function loadState(opts?: StateEnv): State {
   }
   try {
     const data = JSON.parse(text) as Partial<State>;
-    return { ...fallback, ...data, server: env.TOOLSTILE_URL ?? data.server ?? fallback.server, agents: data.agents ?? {} };
+    return { ...fallback, ...data, agents: data.agents ?? {} };
   } catch {
     throw new Error(`${statePath(opts)} is not valid JSON. Delete it and run toolstile auth login again.`);
   }

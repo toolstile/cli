@@ -8,7 +8,7 @@ import { checklist } from "./prompt.js";
 import { runProxy } from "./proxy.js";
 import { type Style, tildify } from "./report.js";
 import { CLIENT_NAMES } from "./sources.js";
-import { loadState, saveState, type State, type StateEnv } from "./state.js";
+import { type AgentLink, loadState, saveState, type State, type StateEnv } from "./state.js";
 import type { ClientId } from "./types.js";
 
 export interface Context {
@@ -64,16 +64,16 @@ const formatCode = (code: string) => (code.length === 8 ? `${code.slice(0, 4)}-$
 export async function login(ctx: Context, options: { server?: string; browser: boolean }): Promise<number> {
   const s = ctx.style;
   const state = loadState(stateEnv(ctx));
-  if (options.server) state.server = normalizeServer(options.server);
-  const api = ctx.api(state.server);
+  const server = normalizeServer(options.server ?? ctx.env.TOOLSTILE_URL ?? state.server);
+  const api = ctx.api(server);
   const code = await api.deviceCode();
-  print(ctx, `Open this page on any device with a browser and sign in to Toolstile:`);
+  print(ctx, `Open this page on any device with a browser, sign in to Toolstile and enter the code:`);
   print(ctx);
-  print(ctx, `  ${s.bold(code.verification_uri_complete)}`);
+  print(ctx, `  ${s.bold(code.verification_uri)}`);
+  print(ctx, `  ${s.bold(formatCode(code.user_code))}`);
   print(ctx);
-  print(ctx, `Check that it shows this code: ${s.bold(formatCode(code.user_code))}`);
   print(ctx, s.dim(`Waiting for approval. The code expires in ${Math.round(code.expires_in / 60)} minutes.`));
-  if (options.browser) (ctx.openBrowser ?? defaultOpenBrowser(ctx))(code.verification_uri_complete);
+  if (options.browser) (ctx.openBrowser ?? defaultOpenBrowser(ctx))(code.verification_uri);
 
   const sleep = ctx.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   let interval = Math.max(code.interval, 1) * 1000;
@@ -98,13 +98,15 @@ export async function login(ctx: Context, options: { server?: string; browser: b
   }
   const account = await api.account(token);
   const previous = state.session;
-  if (previous) await api.signOut(previous.token).catch(() => undefined);
-  if (previous && previous.email !== account.email) {
+  // The old session is ended where it was issued, never sent to the new server.
+  if (previous) await ctx.api(previous.server ?? state.server).signOut(previous.token).catch(() => undefined);
+  if (server !== state.server || (previous && previous.email !== account.email)) {
     // Another account's workspace and device do not apply; enabled agents keep their own access.
     delete state.workspace;
     delete state.device;
   }
-  state.session = { token, email: account.email, expiresAt: account.expiresAt };
+  state.server = server;
+  state.session = { token, email: account.email, expiresAt: account.expiresAt, server };
   saveState(state, stateEnv(ctx));
   print(ctx);
   print(ctx, `Signed in as ${s.bold(account.email)}. Next: ${s.bold("toolstile mcp setup")}`);
@@ -119,7 +121,7 @@ export async function logout(ctx: Context): Promise<number> {
   }
   let reached = true;
   await ctx
-    .api(state.server)
+    .api(state.session.server ?? state.server)
     .signOut(state.session.token)
     .catch((error: unknown) => {
       // 401 means the session had already ended; anything else is worth saying.
@@ -183,7 +185,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
   const state = loadState(stateEnv(ctx));
   const session = state.session;
   if (!session) throw new UserError("Sign in first: toolstile auth login");
-  const api = ctx.api(state.server);
+  const api = ctx.api(session.server ?? state.server);
   const account = await api.account(session.token).catch((error: unknown) => {
     if (error instanceof ApiError && error.status === 401)
       throw new UserError("Your sign-in has expired. Run toolstile auth login again.");
@@ -218,8 +220,15 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
   );
   const live = (client: ClientId) => {
     const link = state.agents[client];
-    return !!link && link.workspaceId === workspace.id && remote.has(link.id);
+    return !!link && link.server === state.server && link.workspaceId === workspace.id && remote.has(link.id);
   };
+  /** Removes an agent where it was created; links from another server are just dropped. */
+  const removeRemote = (link: AgentLink) =>
+    link.server === state.server
+      ? api.removeAgent(session.token, link.workspaceId, link.id).catch((error: unknown) => {
+          if (!(error instanceof ApiError && (error.status === 404 || error.status === 403))) throw error;
+        })
+      : Promise.resolve();
   const deviceLabel = state.device?.label ?? hostname().replace(/\.local$/, "");
   const all = targets(ctx);
   const shown = all.filter((t) => t.detected || live(t.client) || state.agents[t.client] || enable.includes(t.client));
@@ -260,21 +269,30 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
 
   const manual: { target: Target; error: ManualEditError; enable: boolean }[] = [];
   const changes: string[] = [];
+  const replaced: string[] = [];
   for (const target of all) {
     const want = wanted.has(target.client);
     const link = state.agents[target.client];
     if (want) {
       if (!live(target.client)) {
-        if (link) await api.removeAgent(session.token, link.workspaceId, link.id).catch(() => undefined);
+        if (link) await removeRemote(link).catch(() => undefined);
         const { id: deviceId } = await ensureDevice();
         const created = await api.addAgent(session.token, { workspaceId: workspace.id, deviceId, label: target.name });
-        state.agents[target.client] = { id: created.id, workspaceId: workspace.id, label: created.label, token: created.token };
+        state.agents[target.client] = {
+          id: created.id,
+          workspaceId: workspace.id,
+          server: state.server,
+          label: created.label,
+          token: created.token,
+        };
         // Saved before touching the agent's config, so a token is never lost.
         saveState(state, stateEnv(ctx));
       }
       try {
         const result = writeEntry(target, proxyCommand(target.client, ctx.version, ctx.platform));
         if (!live(target.client) || result !== "unchanged") changes.push(`${s.bold("+")} ${target.name}  ${s.dim(tildify(target.path, ctx.home))}`);
+        if (result === "replaced")
+          replaced.push(target.name);
       } catch (error) {
         if (!(error instanceof ManualEditError)) throw error;
         manual.push({ target, error, enable: true });
@@ -287,9 +305,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
         manual.push({ target, error, enable: false });
       }
       if (link) {
-        await api.removeAgent(session.token, link.workspaceId, link.id).catch((error: unknown) => {
-          if (!(error instanceof ApiError && (error.status === 404 || error.status === 403))) throw error;
-        });
+        await removeRemote(link);
         delete state.agents[target.client];
         saveState(state, stateEnv(ctx));
       }
@@ -303,6 +319,13 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
     print(ctx);
     print(ctx, "Restart agents that are running to pick up the change.");
   } else print(ctx, "Nothing to change.");
+  if (replaced.length) {
+    print(ctx);
+    print(
+      ctx,
+      `Replaced an existing "toolstile" server in ${replaced.join(", ")}. If it signed in directly, remove that older agent under Devices & agents in the dashboard.`,
+    );
+  }
   for (const { target, error, enable } of manual) {
     print(ctx);
     print(ctx, `${target.name}: ${tildify(target.path, ctx.home)} was not changed because ${error.message}.`);
@@ -325,7 +348,8 @@ export async function proxy(ctx: Context, agent: string | undefined): Promise<nu
   const link = state.agents[client];
   if (!link) throw new UserError(`${CLIENT_NAMES[client]} is not enabled on this machine. Run toolstile mcp setup.`);
   await runProxy({
-    endpoint: `${state.server}/mcp`,
+    // The token goes only to the server that issued it, whatever the environment says.
+    endpoint: `${link.server}/mcp`,
     token: link.token,
     input: ctx.stdin as Readable,
     output: ctx.stdout as Writable,

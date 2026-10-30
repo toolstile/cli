@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parseJsonc } from "./parse.js";
@@ -87,10 +97,12 @@ function readText(path: string): string | null {
   }
 }
 
-/** Replaces the file in one step and keeps its permission bits. */
-function writeText(path: string, text: string) {
+/** Replaces the file in one step and keeps its permission bits; a symlink keeps pointing at it. */
+function writeText(link: string, text: string) {
+  let path = link;
   let mode = 0o600;
   try {
+    path = realpathSync(link);
     mode = statSync(path).mode & 0o777;
   } catch {
     mkdirSync(dirname(path), { recursive: true });
@@ -151,7 +163,13 @@ export function readEntry(target: Target): unknown {
  * Adds (or, with `command` null, removes) the `toolstile` entry. JSON files with comments are
  * not rewritten, since that would drop the comments; the caller shows the snippet instead.
  */
-export function writeEntry(target: Target, command: { command: string; args: string[] } | null): "added" | "updated" | "removed" | "unchanged" {
+export type WriteResult = "added" | "updated" | "replaced" | "removed" | "unchanged";
+
+/** `replaced` means a hand-written `toolstile` server (not the proxy) was swapped out. */
+const outcome = (command: unknown, existing: unknown): WriteResult =>
+  !command ? "removed" : existing === undefined ? "added" : isProxyEntry(existing) ? "updated" : "replaced";
+
+export function writeEntry(target: Target, command: { command: string; args: string[] } | null): WriteResult {
   const text = readText(target.path) ?? "";
   if (target.format === "codex") {
     let current: Record<string, unknown> | undefined;
@@ -164,12 +182,17 @@ export function writeEntry(target: Target, command: { command: string; args: str
     if (!command && (existing === undefined || !isProxyEntry(existing))) return "unchanged";
     let next = withoutTomlEntry(text);
     if (command) next = `${next.replace(/\s*$/, "")}${next.trim() ? "\n\n" : ""}${tomlEntry(command)}`;
-    const parsed = (parseToml(next) as { mcp_servers?: Record<string, unknown> }).mcp_servers?.[ENTRY];
+    let parsed: unknown;
+    try {
+      parsed = (parseToml(next) as { mcp_servers?: Record<string, unknown> }).mcp_servers?.[ENTRY];
+    } catch {
+      parsed = null;
+    }
     if (command ? !isProxyEntry(parsed) : parsed !== undefined)
-      throw new ManualEditError(target, `its [mcp_servers] table is written inline`, command ? tomlEntry(command) : "");
+      throw new ManualEditError(target, "its toolstile server is written in a form setup cannot edit", command ? tomlEntry(command) : "");
     if (next === text) return "unchanged";
     writeText(target.path, next);
-    return !command ? "removed" : existing === undefined ? "added" : "updated";
+    return outcome(command, existing);
   }
 
   const key = serversKey(target.format);
@@ -199,5 +222,5 @@ export function writeEntry(target: Target, command: { command: string; args: str
   object[key] = servers;
   const indent = text.match(/\n([ \t]+)"/)?.[1] ?? "  ";
   writeText(target.path, `${JSON.stringify(object, null, indent)}\n`);
-  return !entry ? "removed" : existing === undefined ? "added" : "updated";
+  return outcome(entry, existing);
 }

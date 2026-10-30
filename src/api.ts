@@ -41,6 +41,8 @@ async function request<T>(fetcher: Fetch, url: string, init: RequestInit = {}): 
   try {
     response = await fetcher(url, {
       ...init,
+      // Never follow a redirect with a session token to another address.
+      redirect: "error",
       headers: { "Content-Type": "application/json", Accept: "application/json", ...init.headers },
     });
   } catch {
