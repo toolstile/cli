@@ -21,12 +21,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
+      # No registry-url: npm 11.5.1+ (bundled with this Node) exchanges the
+      # OIDC token itself, and a generated .npmrc would make every pnpm step
+      # warn about the unset NODE_AUTH_TOKEN placeholder.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
+          node-version: 24.17.0
+          package-manager-cache: false
+
+      # pnpm comes from Node's bundled corepack at the packageManager version.
+      - run: corepack enable pnpm && pnpm --version
 
       - name: Check the tag matches package.json
         run: |
