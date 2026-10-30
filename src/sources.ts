@@ -98,31 +98,35 @@ export function pointerJoin(base: string, key: string): string {
   return part.startsWith("[") ? `${base}${part}` : `${base}.${part}`;
 }
 
-function toServer(client: ClientId, file: string, pointer: string, name: string, v: unknown): ServerEntry | null {
+function toServer(client: ClientId, file: string, path: string[], name: string, v: unknown): ServerEntry | null {
   if (!isObject(v)) return null;
   const extraSecrets: Record<string, string> = {};
   const bearer = str(v.bearer_token);
   if (bearer) extraSecrets.bearer_token = bearer;
+  const headerKeys: Record<string, string> = {};
+  for (const key of ["headers", "http_headers"]) for (const name of Object.keys(stringRecord(v[key]))) headerKeys[name] = key;
   return {
     client,
     file,
-    pointer,
+    pointer: path.reduce(pointerJoin, ""),
+    path,
     name,
     command: str(v.command),
     args: strings(v.args),
     env: stringRecord(v.env),
     url: str(v.url) ?? str(v.serverUrl) ?? str(v.httpUrl),
     headers: { ...stringRecord(v.headers), ...stringRecord(v.http_headers) },
+    headerKeys,
     extraSecrets,
     autoApproved: [...strings(v.alwaysAllow), ...strings(v.autoApprove)],
   };
 }
 
-function serversAt(client: ClientId, file: string, base: string, v: unknown): ServerEntry[] {
+function serversAt(client: ClientId, file: string, base: string[], v: unknown): ServerEntry[] {
   if (!isObject(v)) return [];
   const out: ServerEntry[] = [];
   for (const [name, def] of Object.entries(v)) {
-    const server = toServer(client, file, pointerJoin(base, name), name, def);
+    const server = toServer(client, file, [...base, name], name, def);
     if (server) out.push(server);
   }
   return out;
@@ -229,15 +233,14 @@ export function discover(opts: ScanOptions): Discovery {
 
     switch (c.kind) {
       case "mcp":
-        result.servers.push(...serversAt(c.client, c.path, "mcpServers", data.mcpServers));
+        result.servers.push(...serversAt(c.client, c.path, ["mcpServers"], data.mcpServers));
         break;
       case "claude-json":
-        result.servers.push(...serversAt(c.client, c.path, "mcpServers", data.mcpServers));
+        result.servers.push(...serversAt(c.client, c.path, ["mcpServers"], data.mcpServers));
         if (isObject(data.projects)) {
           for (const [project, conf] of Object.entries(data.projects)) {
             if (!isObject(conf)) continue;
-            const base = pointerJoin(pointerJoin("projects", project), "mcpServers");
-            result.servers.push(...serversAt(c.client, c.path, base, conf.mcpServers));
+            result.servers.push(...serversAt(c.client, c.path, ["projects", project, "mcpServers"], conf.mcpServers));
           }
         }
         break;
@@ -245,13 +248,13 @@ export function discover(opts: ScanOptions): Discovery {
         result.approvals.push(...claudeApprovals(file));
         break;
       case "codex":
-        result.servers.push(...serversAt(c.client, c.path, "mcp_servers", data.mcp_servers));
+        result.servers.push(...serversAt(c.client, c.path, ["mcp_servers"], data.mcp_servers));
         break;
       case "vscode-settings":
-        if (isObject(data.mcp)) result.servers.push(...serversAt(c.client, c.path, "mcp.servers", data.mcp.servers));
+        if (isObject(data.mcp)) result.servers.push(...serversAt(c.client, c.path, ["mcp", "servers"], data.mcp.servers));
         break;
       case "vscode-mcp":
-        result.servers.push(...serversAt(c.client, c.path, "servers", data.servers));
+        result.servers.push(...serversAt(c.client, c.path, ["servers"], data.servers));
         break;
     }
   }

@@ -16,8 +16,8 @@ const fitEnd = (text: string, width: number) =>
 
 /**
  * Terminal checklist: arrows (or j/k) move, space toggles, a toggles all, enter saves.
- * Every line is fitted to the terminal width: a wrapped line takes two rows, and the redraw
- * would then move up too few rows and leave copies of the title behind.
+ * Every line is fitted to the terminal width, and a list taller than the terminal scrolls: a
+ * wrapped or scrolled-off line breaks the redraw, which would leave copies of the title behind.
  */
 export function checklist(
   title: string,
@@ -29,14 +29,23 @@ export function checklist(
   const state = choices.map((c) => c.checked);
   let cursor = Math.max(0, options.single ? state.indexOf(true) : 0);
   let drawn = 0;
+  let top = 0;
   const help = options.single ? "↑/↓ move · enter select · esc cancel" : "↑/↓ move · space toggle · a all · enter save · esc cancel";
   const render = () => {
     if (drawn) output.write(`\x1b[${drawn}A\x1b[0J`);
     // A spare column for glyphs some terminals draw double-width.
     const width = Math.max(20, (output.columns || 80) - 2);
+    // Title, help and a spare row stay on screen; the list scrolls to keep the cursor visible.
+    const room = Math.max(1, (output.rows || 24) - 3);
+    if (cursor < top) top = cursor;
+    if (cursor >= top + room) top = cursor - room + 1;
+    top = Math.min(top, Math.max(0, choices.length - room));
+    const shown = choices.slice(top, top + room);
+    const position = shown.length < choices.length ? ` (${top + 1}–${top + shown.length} of ${choices.length})` : "";
     const lines = [
-      fitEnd(title, width),
-      ...choices.map((c, i) => {
+      fitEnd(title + position, width),
+      ...shown.map((c, j) => {
+        const i = top + j;
         const mark = options.single ? (i === cursor ? "●" : "○") : state[i] ? "◉" : "○";
         const pointer = i === cursor ? "›" : " ";
         const text = fitEnd(`${pointer} ${mark} ${c.label}`, width);

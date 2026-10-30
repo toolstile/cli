@@ -98,7 +98,7 @@ function readText(path: string): string | null {
 }
 
 /** Replaces the file in one step and keeps its permission bits; a symlink keeps pointing at it. */
-function writeText(link: string, text: string) {
+export function writeText(link: string, text: string) {
   let path = link;
   let mode = 0o600;
   try {
@@ -127,18 +127,31 @@ function tomlEntry(command: { command: string; args: string[] }) {
   return `[mcp_servers.${ENTRY}]\ncommand = ${JSON.stringify(command.command)}\nargs = [${command.args.map((a) => JSON.stringify(a)).join(", ")}]\n`;
 }
 
-/** Drops `[mcp_servers.toolstile]` and its sub-tables, keeping every other line and comment. */
-function withoutTomlEntry(text: string): string {
+/**
+ * Drops `[mcp_servers.<name>]` and its sub-tables, keeping every other line and comment. With
+ * `replacement`, that text goes where the table was (or at the end when there was none).
+ */
+export function withoutTomlTable(text: string, server = ENTRY, replacement?: string): string {
   const lines = text.split("\n");
   const out: string[] = [];
   let skipping = false;
+  const plain = (header: string) => header.replace(/\s+/g, "").replace(/"/g, "");
+  const table = plain(`mcp_servers.${server}`);
   for (const line of lines) {
     const header = line.match(/^\s*\[\s*([^\]]+?)\s*\]\s*(#.*)?$/)?.[1];
     if (header !== undefined) {
-      const name = header.replace(/\s+/g, "").replace(/"/g, "");
-      skipping = name === `mcp_servers.${ENTRY}` || name.startsWith(`mcp_servers.${ENTRY}.`);
+      const name = plain(header);
+      skipping = name === table || name.startsWith(`${table}.`);
+    }
+    if (skipping && replacement !== undefined) {
+      out.push(replacement.replace(/\n+$/, ""), "");
+      replacement = undefined;
     }
     if (!skipping) out.push(line);
+  }
+  if (replacement !== undefined) {
+    while (out.length && out[out.length - 1]!.trim() === "") out.pop();
+    out.push(...(out.length ? [""] : []), replacement.replace(/\n+$/, ""), "");
   }
   return out.join("\n").replace(/\n{3,}$/, "\n\n");
 }
@@ -180,7 +193,7 @@ export function writeEntry(target: Target, command: { command: string; args: str
     }
     const existing = current?.[ENTRY];
     if (!command && (existing === undefined || !isProxyEntry(existing))) return "unchanged";
-    let next = withoutTomlEntry(text);
+    let next = withoutTomlTable(text);
     if (command) next = `${next.replace(/\s*$/, "")}${next.trim() ? "\n\n" : ""}${tomlEntry(command)}`;
     let parsed: unknown;
     try {

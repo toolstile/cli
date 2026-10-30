@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { createApi } from "./api.js";
 import { renderCard, shareText, shareUrl } from "./card.js";
 import { type Context, login, logout, proxy, setup, UserError } from "./commands.js";
+import { runFix } from "./fix.js";
 import { audit } from "./index.js";
 import { redact, renderJson, renderReport, style } from "./report.js";
 import type { Severity } from "./types.js";
@@ -13,6 +14,7 @@ const HELP = `toolstile: audit your MCP configs and connect your agents to Tools
 
 Usage
   npx toolstile audit [options]     Check local MCP configs (offline, read-only)
+  npx toolstile audit --fix         Review suggested fixes and apply the ones you pick
   npx toolstile auth login          Sign in, from any machine, with a code
   npx toolstile auth logout         Sign out on this machine
   npx toolstile mcp setup           Choose which agents here use Toolstile
@@ -35,7 +37,21 @@ filesystem access and unencrypted remote servers.
 It only reads files. It sends nothing over the network and never
 prints secret values.
 
+With --fix it lists every change it can make, then applies the ones
+you select:
+  - moves plaintext secrets into environment variables, saved in an
+    owner-only file your shell loads, and references them from the config
+  - restricts config files that hold secrets to your user (chmod 600)
+  - pins unpinned npm and PyPI packages to their current version (the
+    only network use: it looks those versions up on npm and PyPI)
+  - removes rules that approve whole servers without asking (off at first)
+Original files are backed up before they change. Findings it cannot fix
+safely are listed with what to do by hand.
+
 Options
+  --fix               Suggest fixes and apply the ones you select
+  --yes               With --fix: apply the fixes that start selected, without asking
+  --dry-run           With --fix: only show the changes
   --json              Print results as JSON
   --card [file]       Write a shareable grade card (default toolstile-audit.png;
                       use a .svg name for SVG). Contains only the grade and counts.
@@ -87,6 +103,9 @@ function version(): string {
 }
 
 interface Args {
+  fix: boolean;
+  yes: boolean;
+  dryRun: boolean;
   json: boolean;
   redact: boolean;
   card: string | null;
@@ -95,7 +114,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args | "help" | "version" {
-  const args: Args = { json: false, redact: false, card: null, project: process.cwd(), failOn: null };
+  const args: Args = { fix: false, yes: false, dryRun: false, json: false, redact: false, card: null, project: process.cwd(), failOn: null };
   const rest = [...argv];
   if (rest[0] === "audit") rest.shift();
   for (let i = 0; i < rest.length; i++) {
@@ -114,6 +133,16 @@ function parseArgs(argv: string[]): Args | "help" | "version" {
       case "-v":
       case "--version":
         return "version";
+      case "--fix":
+        args.fix = true;
+        break;
+      case "--yes":
+      case "-y":
+        args.yes = true;
+        break;
+      case "--dry-run":
+        args.dryRun = true;
+        break;
       case "--json":
         args.json = true;
         break;
@@ -146,6 +175,9 @@ function parseArgs(argv: string[]): Args | "help" | "version" {
         throw new Error(`Unknown option: ${a}`);
     }
   }
+  if ((args.yes || args.dryRun) && !args.fix) throw new Error(`${args.yes ? "--yes" : "--dry-run"} only works with --fix`);
+  if (args.fix && (args.json || args.card || args.redact || args.failOn))
+    throw new Error("--fix cannot be combined with --json, --card, --redact or --fail-on");
   return args;
 }
 
@@ -266,13 +298,26 @@ async function main(): Promise<number> {
   }
 
   const home = homedir();
+  if (args.fix) {
+    return runFix({
+      home,
+      cwd: args.project,
+      platform: process.platform,
+      env: process.env,
+      stdin: process.stdin,
+      stdout: process.stdout,
+      style: style(process.stdout.isTTY === true && !process.env.NO_COLOR),
+      yes: args.yes,
+      dryRun: args.dryRun,
+    });
+  }
   const raw = audit({ home, cwd: args.project });
   const result = args.redact ? redact(raw, home, args.project) : raw;
   const color = !args.json && process.stdout.isTTY === true && !process.env.NO_COLOR;
   const s = style(color);
 
   if (args.json) process.stdout.write(renderJson(result));
-  else process.stdout.write(renderReport(result, home, s, args.redact));
+  else process.stdout.write(renderReport(result, home, s, args.redact, process.stdout.columns || 80));
 
   if (args.card) {
     if (result.grade === null) {

@@ -27,34 +27,90 @@ scored: remote servers need an entry per client.
 ```text
 toolstile audit · local MCP config check · nothing leaves this machine
 
-Scanned 4 files from Claude Code, Cursor, Codex: 10 MCP servers.
+  Grade C  71/100   2 high · 1 medium
+  10 MCP servers in 4 files from Claude Code, Cursor, Codex
 
-  Grade B  77/100   1 high · 1 medium · 1 low
+HIGH  Plaintext secrets (2)
+  Anything that can read these files can use the credentials, including
+  backups, dotfile syncs and other tools.
 
-HIGH   Plaintext secret in github (Cursor)
-       A GitHub token is written directly into the config file. Anything that can
-       read the file, including backups, dotfile syncs and other tools, can use it.
-       ~/.cursor/mcp.json  mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN
-       Fix: Reference an environment variable instead (for example ${API_TOKEN}) …
+  • github (Cursor)  GitHub token
+    ~/.cursor/mcp.json  mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN
+  • linear (Claude Code)  authorization header
+    ~/.claude.json  mcpServers.linear.headers.Authorization
+
+  Fix Move them into environment variables, or use the server's OAuth sign-in.
+      Rotate any secret in a file that was shared or synced.
+…
+Fix them: npx toolstile audit --fix (shows every change; you pick which to apply)
 ```
+
+## Fix what it finds
+
+```sh
+npx toolstile audit --fix
+```
+
+lists every change it can make, as a diff with secret values hidden, then lets
+you pick which to apply (space toggles, enter applies):
+
+```text
+  1.  HIGH   github (Cursor): move secret to $GITHUB_PERSONAL_ACCESS_TOKEN
+             ~/.cursor/mcp.json  mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN
+             - "••••"
+             + "${env:GITHUB_PERSONAL_ACCESS_TOKEN}"
+  2.  MEDIUM linear (Claude Code): pin linear-mcp to 1.4.2
+             ~/.claude.json  mcpServers.linear.args[1]
+             - "linear-mcp"
+             + "linear-mcp@1.4.2"
+```
+
+| Finding | What `--fix` does |
+| --- | --- |
+| Plaintext secret in `env` or a header | Replaces the value with a variable reference in the client's own syntax (`${NAME}` for Claude Code and Gemini CLI, `${env:NAME}` for Cursor, VS Code and Windsurf, `env_vars` / `bearer_token_env_var` / `env_http_headers` for Codex). The value goes into `~/.config/toolstile/secrets.env` (mode 600), and one line in your shell profile (`~/.zshrc`, `~/.bash_profile` or `~/.bashrc`, `~/.profile`, or fish's `conf.d`) loads it. A secret shared by several clients becomes one variable. |
+| Config file with secrets readable by other accounts | `chmod 600` |
+| Unpinned npm or PyPI package | Pins the version that is current now, looked up on npm or PyPI |
+| Rule that approves a whole server, or `enableAllProjectMcpServers` | Removes it. These start unselected, since the agent then asks before each tool. |
+
+Everything else (secrets in arguments or URLs, Claude Desktop and Cline, which
+cannot read variables, Windows, `http://` servers, Docker images, broad
+filesystem roots and auto-approve lists) is listed with what to change by hand.
+
+Each edited file is checked before it is written: it must parse to exactly the
+planned result, or it is left alone. JSON files keep their comments and layout;
+a Codex server's table is rewritten in place. The original files are copied to
+`~/.config/toolstile/backups/` first. They still hold the old secrets, so delete
+them once your agents work. After moving secrets, open a new terminal and restart
+your agents so they start with the variables, and rotate any secret that sat in a
+shared or synced file.
+
+`--dry-run` only shows the changes; `--yes` applies the ones that start selected
+without asking.
 
 ## The audit only reads
 
-- Reads config files on your machine. Writes nothing unless you ask for a card.
-- Makes no network requests and collects no telemetry. (Only the separate
-  `auth` and `mcp` commands below talk to Toolstile, and only when you run them.)
+- Reads config files on your machine. Writes nothing unless you ask for a card,
+  or run `--fix` and confirm the changes.
+- Makes no network requests and collects no telemetry. (`--fix` looks up the
+  current version of the unpinned packages it offers to pin on npm or PyPI. Only
+  the separate `auth` and `mcp` commands below talk to Toolstile, and only when
+  you run them.)
 - Never prints, stores or sends secret values. Findings name the file and key,
   for example `mcpServers.github.env.GITHUB_TOKEN`, and the kind of secret.
 - Never quotes a config file: one that cannot be read or parsed is listed with a
   reason and position only, for example `invalid TOML at line 3, column 12`.
-- About 2,500 lines of TypeScript with one runtime dependency
+- About 3,500 lines of TypeScript with two runtime dependencies
   ([smol-toml](https://github.com/squirrelchat/smol-toml), for Codex's TOML
-  config) and an optional one ([resvg-js](https://github.com/thx/resvg-js), only
+  config, and [jsonc-parser](https://github.com/microsoft/node-jsonc-parser), so
+  `--fix` keeps comments and layout in JSON files) and an optional one ([resvg-js](https://github.com/thx/resvg-js), only
   to render `--card` as PNG). Read it before you run it.
 
 ## Options
 
 ```text
+--fix               Suggest fixes and apply the ones you select
+--yes               With --fix: apply the fixes that start selected, without asking
+--dry-run           With --fix: only show the changes
 --json              Print results as JSON
 --card [file]       Write a shareable grade card (default toolstile-audit.png;
                     use a .svg name for SVG). Contains only the grade and counts.

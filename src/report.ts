@@ -56,6 +56,8 @@ export function redact(r: AuditResult, home: string, project: string | null): Au
     findings: r.findings.map((f) => ({
       ...f,
       title: scrub(f.title),
+      subject: scrub(f.subject),
+      note: scrub(f.note),
       detail: scrub(f.detail),
       fix: scrub(f.fix),
       locations: f.locations.map((l) => ({ file: scrub(l.file), pointer: scrub(l.pointer) })),
@@ -63,7 +65,71 @@ export function redact(r: AuditResult, home: string, project: string | null): Au
   };
 }
 
-export function renderReport(r: AuditResult, home: string, s: Style, redacted = false): string {
+/** How each kind of finding is explained once, above the places it was found. */
+const GROUPS: Record<string, { heading: string; why: string; fix: string }> = {
+  "plaintext-secret": {
+    heading: "Plaintext secrets",
+    why: "Anything that can read these files can use the credentials, including backups, dotfile syncs and other tools.",
+    fix: "Move them into environment variables, or use the server's OAuth sign-in. Rotate any secret in a file that was shared or synced.",
+  },
+  "insecure-transport": {
+    heading: "Unencrypted remote servers",
+    why: "Requests, tool results and any credentials travel over plain http://.",
+    fix: "Use the server's https:// endpoint.",
+  },
+  "privileged-container": {
+    heading: "Containers with host-level access",
+    why: "--privileged, the Docker socket and host networking give the server effective control of this machine.",
+    fix: "Remove them unless the server truly needs them.",
+  },
+  "copied-secret": {
+    heading: "Credentials copied into several files",
+    why: "Rotating or revoking one of these means finding every copy.",
+    fix: "Keep one copy in your environment or keychain and reference it from each client, or route the clients through one gateway.",
+  },
+  "readable-config": {
+    heading: "Files with secrets that other accounts can read",
+    why: "The file and every folder above it are open, so other accounts on this machine can read the secrets.",
+    fix: "Restrict each file to your user with chmod 600.",
+  },
+  "unpinned-package": {
+    heading: "Unpinned packages",
+    why: "Each start runs whatever version is newest, so a compromised or broken release runs with the server's access.",
+    fix: "Pin an exact version (an image digest or exact tag for Docker).",
+  },
+  "broad-filesystem": {
+    heading: "Filesystem servers with broad access",
+    why: "The allowed root includes SSH keys, cloud credentials and every other config file.",
+    fix: "Allow only the project folders the agent needs.",
+  },
+  "auto-approved-tools": {
+    heading: "Tools that run without asking",
+    why: "A prompt injection in a web page, issue or email the agent reads can call these, including write and delete tools.",
+    fix: "Approve specific read-only tools (mcp__server__tool) instead of whole servers.",
+  },
+};
+
+/** Greedy word wrap; every line after the first starts with `indent`. Long words are kept whole. */
+export function wrap(text: string, width: number, indent = ""): string {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const room = width - (lines.length ? indent.length : 0);
+    if (line && line.length + 1 + word.length > room) {
+      lines.push(line);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(line);
+  return lines.join(`\n${indent}`);
+}
+
+const SEVERITIES: Severity[] = ["high", "medium", "low"];
+
+export function renderReport(r: AuditResult, home: string, s: Style, redacted = false, columns = 80): string {
+  // Wide terminals still get short lines: they are easier to read.
+  const width = Math.max(40, Math.min(columns, 100) - 1);
+  const para = (text: string, indent = "  ") => indent + wrap(text, width - indent.length, indent);
   const lines: string[] = [];
   lines.push("", `${s.bold("toolstile audit")} ${s.dim("· local MCP config check · nothing leaves this machine")}`, "");
 
@@ -76,13 +142,6 @@ export function renderReport(r: AuditResult, home: string, s: Style, redacted = 
     return lines.join("\n");
   }
 
-  const clientList = r.clients.map((c) => CLIENT_NAMES[c]).join(", ");
-  lines.push(`Scanned ${plural(r.files.length, "file")} from ${clientList}: ${plural(r.servers, "MCP server")}.`);
-  for (const u of r.unreadable) {
-    lines.push(s.dim(`Skipped ${tildify(u.path, home)} (${CLIENT_NAMES[u.client]}): ${u.error}.`));
-  }
-  lines.push("");
-
   if (r.grade !== null) {
     const c = counts(r.findings);
     const parts = [
@@ -91,30 +150,52 @@ export function renderReport(r: AuditResult, home: string, s: Style, redacted = 
       c.low && s.sev("low", `${c.low} low`),
     ].filter(Boolean);
     const summary = parts.length ? parts.join(s.dim(" · ")) : "no issues found";
-    lines.push(`  ${s.bold(s.grade(r.grade, `Grade ${r.grade}`))}  ${s.dim(`${r.score}/100`)}   ${summary}`, "");
+    lines.push(`  ${s.bold(s.grade(r.grade, `Grade ${r.grade}`))}  ${s.dim(`${r.score}/100`)}   ${summary}`);
+  }
+  const clientList = r.clients.map((c) => CLIENT_NAMES[c]).join(", ");
+  lines.push(s.dim(para(`${plural(r.servers, "MCP server")} in ${plural(r.files.length, "file")} from ${clientList}`)));
+  for (const u of r.unreadable) {
+    lines.push(s.dim(para(`Skipped ${tildify(u.path, home)} (${CLIENT_NAMES[u.client]}): ${u.error}.`)));
+  }
+  lines.push("");
+
+  // One block per kind of problem: what it is and how to fix it once, then each place it was found.
+  for (const severity of SEVERITIES) {
+    const byRule = new Map<string, Finding[]>();
+    for (const f of r.findings) if (f.severity === severity) byRule.set(f.rule, [...(byRule.get(f.rule) ?? []), f]);
+    for (const [rule, list] of byRule) {
+      const group = GROUPS[rule];
+      const tag = s.sev(severity, severity.toUpperCase());
+      lines.push(`${tag}  ${s.bold(group?.heading ?? list[0]!.title)} ${s.dim(`(${list.length})`)}`);
+      lines.push(para(group?.why ?? list[0]!.detail), "");
+      for (const f of list) {
+        const note = f.note ? `  ${s.dim(f.note)}` : "";
+        lines.push(`  ${s.sev(severity, "•")} ${tildify(f.subject, home)}${note}`);
+        const shown = f.locations.filter((l) => l.file !== f.subject).slice(0, 4);
+        for (const l of shown) {
+          const where = `${tildify(l.file, home)}  ${l.pointer}`;
+          lines.push(s.dim(where.length <= width - 4 ? `    ${where}` : para(where, "    ")));
+        }
+        const hidden = f.locations.filter((l) => l.file !== f.subject).length - shown.length;
+        if (hidden > 0) lines.push(s.dim(`    … and ${hidden} more`));
+      }
+      lines.push("", `  ${s.bold("Fix")} ${wrap(group?.fix ?? list[0]!.fix, width - 6, "      ")}`, "");
+    }
   }
 
-  const issues = r.findings.filter((f) => f.severity !== "info");
   const info = r.findings.filter((f) => f.severity === "info");
-  for (const f of issues) {
-    const tag = s.sev(f.severity, f.severity.toUpperCase().padEnd(6));
-    lines.push(`${tag} ${s.bold(f.title)}`);
-    lines.push(`       ${f.detail}`);
-    const shown = f.locations.slice(0, 5);
-    for (const l of shown) lines.push(s.dim(`       ${tildify(l.file, home)}  ${l.pointer}`));
-    if (f.locations.length > shown.length) lines.push(s.dim(`       … and ${f.locations.length - shown.length} more`));
-    lines.push(`       ${s.dim("Fix:")} ${f.fix}`, "");
-  }
   if (info.length) {
     lines.push(s.dim("Also set up in more than one client (not scored):"));
-    for (const f of info) lines.push(s.dim(`  ${f.title.replace(/ is set up separately in (\d+) clients$/, "")}: ${f.detail.split(".")[0]!.replace(/^Configured in /, "")}`));
+    for (const f of info) lines.push(s.dim(para(`${f.subject}: ${f.note}`)));
     lines.push("");
   }
 
+  if (r.findings.some((f) => f.severity !== "info"))
+    lines.push(`${s.bold("Fix them:")} npx toolstile audit --fix ${s.dim("(shows every change; you pick which to apply)")}`, "");
   lines.push(s.dim("Secret values are never printed."));
-  if (!redacted) lines.push(s.dim("Posting this? Run with --redact to hide your paths, or --card for an image with only the grade."));
+  if (!redacted) lines.push(s.dim(wrap("Posting this? Run with --redact to hide your paths, or --card for an image with only the grade.", width)));
   else lines.push(s.dim("Share an image with only the grade: npx toolstile audit --card"));
-  lines.push(s.dim("Keep credentials off your machines and control each agent's tools: https://toolstile.com/?ref=cli"), "");
+  lines.push(s.dim(wrap("Keep credentials off your machines and control each agent's tools: https://toolstile.com/?ref=cli", width)), "");
   return lines.join("\n");
 }
 
