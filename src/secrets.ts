@@ -31,10 +31,10 @@ const PATTERNS: [RegExp, string][] = [
 ];
 
 const SECRET_KEY =
-  /(token|secret|passw(or)?d|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credential|auth|bearer|session|cookie|\bpat\b|_pat$|^pat_)/i;
+  /(token|secret|passw(or)?d|passwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credential|auth|bearer|session|cookie|\bpat\b|_pat$|^pat_|(^|[_-])key$)/i;
 
-/** Key suffixes that name configuration about a secret rather than the secret itself. */
-const NOT_SECRET_KEY = /(url|uri|endpoint|host|port|path|file|dir|type|mode|enabled|header|name|user(name)?|id|region|scope|scopes|method|env_var|_var)$/i;
+/** Key suffixes that name configuration about a secret, or a public half, rather than the secret itself. */
+const NOT_SECRET_KEY = /(url|uri|endpoint|host|port|path|file|dir|type|mode|enabled|header|name|user(name)?|id|region|scope|scopes|method|env_var|_var|public[_-]?key)$/i;
 
 const PLACEHOLDER =
   /^(<.*>|\{.*\}|\[.*\]|x{4,}|\*{3,}|\.{3,}|your[-_ ].*|change[-_ ]?me|todo|placeholder|example|redacted|none|null|undefined|true|false|test|secret|token)$/i;

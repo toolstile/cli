@@ -51,27 +51,80 @@ const LAUNCHERS: Record<string, "npm" | "pypi"> = {
   uvx: "pypi",
 };
 
-/** Splits `command` and `args` into words, handling configs that put the whole command in one string. */
-function words(s: ServerEntry): string[] {
-  if (!s.command) return [];
-  const command = s.args.length === 0 && /\s/.test(s.command.trim()) ? s.command.trim().split(/\s+/) : [s.command];
-  return [...command, ...s.args];
+const base = (p: string) => win32.basename(posix.basename(p)).replace(/\.(cmd|exe)$/i, "");
+
+interface Words {
+  list: string[];
+  /** For each word, its index in `args`, or -1 when it comes from `command`. */
+  arg: number[];
 }
 
-const base = (p: string) => win32.basename(posix.basename(p)).replace(/\.(cmd|exe)$/i, "");
+const split = (text: string) => text.trim().split(/\s+/).filter(Boolean);
+
+/** WSL options that take a value. */
+const WSL_VALUED = new Set(["-d", "--distribution", "--distribution-id", "-u", "--user", "--cd", "--shell-type"]);
+
+/** Index of the first word after a `cmd /c` or `wsl` wrapper at `start`, or `start` when there is none. */
+function afterWrapper(list: string[], start: number): number {
+  const name = base(list[start] ?? "").toLowerCase();
+  let j = start + 1;
+  if (name === "cmd") {
+    // cmd [/d] [/s] [/q] … /c|/k command
+    while (j < list.length && /^\/[a-z]$/i.test(list[j]!) && !/^\/[ck]$/i.test(list[j]!)) j++;
+    return /^\/[ck]$/i.test(list[j] ?? "") ? j + 1 : start;
+  }
+  if (name === "wsl") {
+    while (j < list.length) {
+      const a = list[j]!;
+      if (WSL_VALUED.has(a)) j += 2;
+      else if (a === "-e" || a === "--exec" || a === "--") return j + 1;
+      else if (a.startsWith("-")) j++;
+      else break;
+    }
+    return j;
+  }
+  return start;
+}
+
+/**
+ * Splits `command` and `args` into words, handling configs that put the whole command in one string,
+ * and skips Windows wrappers (`cmd /c npx …`, `wsl npx …`) so the real launcher comes first.
+ */
+function words(s: ServerEntry): Words {
+  if (!s.command) return { list: [], arg: [] };
+  const oneString = s.args.length === 0 && /\s/.test(s.command.trim());
+  let list = oneString ? split(s.command) : [s.command, ...s.args];
+  let arg = oneString ? list.map(() => -1) : list.map((_, i) => i - 1);
+  for (;;) {
+    const start = afterWrapper(list, 0);
+    if (start === 0 || start >= list.length) break;
+    list = list.slice(start);
+    arg = arg.slice(start);
+    // `cmd /c "npx -y pkg"` passes the inner command as one argument.
+    if (list.length === 1 && /\s/.test(list[0]!.trim())) {
+      const from = arg[0]!;
+      list = split(list[0]!);
+      arg = list.map(() => from);
+    }
+  }
+  return { list, arg };
+}
 
 interface Package {
   registry: "npm" | "pypi" | "docker";
   name: string;
   version: string | null;
+  /** Index of the package in the unwrapped words. */
+  wordIndex: number;
+  /** Index of the package in `args`, or -1 when it is inside `command`. */
   argIndex: number;
 }
 
 /** Finds the package a launcher such as npx, uvx or docker runs. */
 export function packageOf(s: ServerEntry): Package | null {
-  const w = words(s);
+  const { list: w, arg } = words(s);
   if (w.length === 0) return null;
-  const cmd = base(w[0]!);
+  const cmd = base(w[0]!).toLowerCase();
   const sub = w.slice(1);
   let registry: Package["registry"] | undefined = LAUNCHERS[cmd];
   let skip = 0;
@@ -85,6 +138,7 @@ export function packageOf(s: ServerEntry): Package | null {
   if (!registry) return null;
   const rest = sub.slice(skip);
   const offset = 1 + skip;
+  const at = (spec: string, i: number) => parsePackage(registry, spec, i, arg[i] ?? -1);
 
   // Flags that take a value; their value is not the package.
   const valued = new Set(["-p", "--package", "--from", "--with", "-e", "--env", "-v", "--volume", "--name", "--network", "--mount", "--env-file", "-w", "--workdir", "--entrypoint", "-u", "--user", "--python"]);
@@ -94,38 +148,39 @@ export function packageOf(s: ServerEntry): Package | null {
     if (a.startsWith("-")) {
       if (valued.has(a)) {
         if ((a === "--package" || a === "-p" || a === "--from") && registry !== "docker") {
-          return parsePackage(registry, rest[i + 1] ?? "", offset + i + 1);
+          return at(rest[i + 1] ?? "", offset + i + 1);
         }
         i++;
       }
       continue;
     }
-    return parsePackage(registry, a, offset + i);
+    return at(a, offset + i);
   }
   return null;
 }
 
-function parsePackage(registry: Package["registry"], spec: string, argIndex: number): Package | null {
+function parsePackage(registry: Package["registry"], spec: string, wordIndex: number, argIndex: number): Package | null {
   if (!spec) return null;
+  const where = { wordIndex, argIndex };
   if (registry === "docker") {
     const at = spec.indexOf("@sha256:");
-    if (at > 0) return { registry, name: spec.slice(0, at), version: spec.slice(at + 1), argIndex };
+    if (at > 0) return { registry, name: spec.slice(0, at), version: spec.slice(at + 1), ...where };
     const slash = spec.lastIndexOf("/");
     const colon = spec.lastIndexOf(":");
     return colon > slash
-      ? { registry, name: spec.slice(0, colon), version: spec.slice(colon + 1), argIndex }
-      : { registry, name: spec, version: null, argIndex };
+      ? { registry, name: spec.slice(0, colon), version: spec.slice(colon + 1), ...where }
+      : { registry, name: spec, version: null, ...where };
   }
   if (registry === "pypi") {
     const m = /^([A-Za-z0-9._\-[\],]+?)(?:(==|@|>=|~=)(.+))?$/.exec(spec);
     if (!m) return null;
-    return { registry, name: m[1]!, version: m[2] === "==" || m[2] === "@" ? m[3]! : null, argIndex };
+    return { registry, name: m[1]!, version: m[2] === "==" || m[2] === "@" ? m[3]! : null, ...where };
   }
   if (/^(https?:|git\+|file:|\.|\/)/.test(spec)) return null;
   const at = spec.indexOf("@", spec.startsWith("@") ? 1 : 0);
   return at > 0
-    ? { registry, name: spec.slice(0, at), version: spec.slice(at + 1), argIndex }
-    : { registry, name: spec, version: null, argIndex };
+    ? { registry, name: spec.slice(0, at), version: spec.slice(at + 1), ...where }
+    : { registry, name: spec, version: null, ...where };
 }
 
 const isPinned = (p: Package) =>
@@ -147,7 +202,7 @@ export function identityOf(s: ServerEntry): string | null {
   }
   const pkg = packageOf(s);
   if (pkg) return `${pkg.registry}:${pkg.name.toLowerCase()}`;
-  const w = words(s);
+  const w = words(s).list;
   return w.length ? `cmd:${w.join(" ")}` : null;
 }
 
@@ -159,7 +214,7 @@ function broadRoots(s: ServerEntry, home: string): string[] {
   if (!isFs || !pkg) return [];
   const homes = new Set([home, home.replace(/\/+$/, ""), "~", "~/", "$HOME", "${HOME}", "%USERPROFILE%"]);
   return words(s)
-    .slice(pkg.argIndex + 1)
+    .list.slice(pkg.wordIndex + 1)
     .filter((a) => a === "/" || /^[A-Za-z]:\\?$/.test(a) || homes.has(a) || homes.has(a.replace(/\/+$/, "")));
 }
 
@@ -265,12 +320,12 @@ export function runChecks(d: Discovery, home: string): Finding[] {
           pkg.registry === "docker"
             ? `Pin an image digest or exact tag, for example ${pkg.name}:<version>.`
             : `Pin an exact version, for example ${pkg.name}${pkg.registry === "pypi" ? "==" : "@"}<version>.`,
-        locations: [at(s, "args", String(Math.max(0, pkg.argIndex - 1)))],
+        locations: [pkg.argIndex >= 0 ? at(s, "args", String(pkg.argIndex)) : at(s, "command")],
         weight: 4,
       });
     }
 
-    const w = words(s);
+    const w = words(s).list;
     if (pkg?.registry === "docker") {
       const risky = w.filter((a) => a === "--privileged" || /\/var\/run\/docker\.sock/.test(a) || a === "--net=host" || a === "--network=host");
       if (risky.length) {

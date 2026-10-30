@@ -67,7 +67,10 @@ export interface Finding {
 
 export interface AuditResult {
   files: { client: ClientId; path: string }[];
-  /** Files that exist but could not be parsed. */
+  /**
+   * Files that exist but could not be read or parsed. `error` is a fixed description with at most
+   * a line and column, for example `invalid TOML at line 3, column 12`; it never quotes the file.
+   */
   unreadable: { client: ClientId; path: string; error: string }[];
   servers: number;
   clients: ClientId[];

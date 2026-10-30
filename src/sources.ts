@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { parseConfig } from "./parse.js";
+import { ConfigParseError, parseConfig } from "./parse.js";
 import type { ApprovalSetting, ClientId, ConfigFile, ServerEntry } from "./types.js";
 
 export interface ScanOptions {
@@ -188,6 +188,13 @@ export interface Discovery {
   approvals: ApprovalSetting[];
 }
 
+/** A fixed description of a read failure; system messages are not passed through. */
+function readError(code: string | undefined): string {
+  if (code === "EACCES" || code === "EPERM") return "permission denied";
+  if (code === "EISDIR") return "is a directory";
+  return code && /^E[A-Z]+$/.test(code) ? `could not read it (${code})` : "could not read it";
+}
+
 export function discover(opts: ScanOptions): Discovery {
   const result: Discovery = { files: [], unreadable: [], servers: [], approvals: [] };
   for (const c of candidates(opts)) {
@@ -198,14 +205,21 @@ export function discover(opts: ScanOptions): Discovery {
       if (!stat.isFile()) continue;
       mode = opts.platform === "win32" ? undefined : stat.mode & 0o777;
       text = readFileSync(c.path, "utf8");
-    } catch {
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Absent files are normal; anything else means a config exists that we could not check.
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        result.unreadable.push({ client: c.client, path: c.path, error: readError(code) });
+      }
       continue;
     }
     let data: unknown;
     try {
       data = parseConfig(c.path, text);
     } catch (error) {
-      result.unreadable.push({ client: c.client, path: c.path, error: (error as Error).message });
+      // parseConfig's messages are fixed text plus a position, never file contents.
+      const message = error instanceof ConfigParseError ? error.message : "could not parse it";
+      result.unreadable.push({ client: c.client, path: c.path, error: message });
       continue;
     }
     const exposure = mode === undefined ? undefined : exposureOf(mode, ancestorModes(c.path));

@@ -79,7 +79,7 @@ export function renderReport(r: AuditResult, home: string, s: Style, redacted = 
   const clientList = r.clients.map((c) => CLIENT_NAMES[c]).join(", ");
   lines.push(`Scanned ${plural(r.files.length, "file")} from ${clientList}: ${plural(r.servers, "MCP server")}.`);
   for (const u of r.unreadable) {
-    lines.push(s.dim(`Skipped ${tildify(u.path, home)} (${CLIENT_NAMES[u.client]}): could not parse it.`));
+    lines.push(s.dim(`Skipped ${tildify(u.path, home)} (${CLIENT_NAMES[u.client]}): ${u.error}.`));
   }
   lines.push("");
 

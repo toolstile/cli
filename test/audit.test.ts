@@ -7,10 +7,12 @@ import { renderCard, shareText } from "../src/card.js";
 import { audit } from "../src/index.js";
 import { redact, renderJson, renderReport, style } from "../src/report.js";
 import { score, shellPath } from "../src/checks.js";
+import { classify } from "../src/secrets.js";
 import { exposureOf } from "../src/sources.js";
 
 const GITHUB_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const API_KEY = "Bearer " + "q8W7e6R5t4Y3u2I1o0P9a8S7d6F5";
+const OPENAI_KEY = "sk-proj-" + "Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0Fe";
 
 let home: string;
 let project: string;
@@ -201,6 +203,78 @@ describe("audit", () => {
     expect(r.grade).toBeNull();
   });
 
+  it("never echoes file text in parse errors", () => {
+    put(join(home, ".codex", "config.toml"), `[mcp_servers.x]\nAPI_KEY = "${OPENAI_KEY}\ncommand = "npx"\n`);
+    put(join(home, ".cursor", "mcp.json"), `{\n  // comment\n  "mcpServers": { "x": { "env": { "TOKEN": "${OPENAI_KEY}" } oops } }\n}`);
+    const r = run();
+    const errors = Object.fromEntries(r.unreadable.map((u) => [u.path, u.error]));
+    expect(errors[join(home, ".codex", "config.toml")]).toMatch(/^invalid TOML at line 2, column \d+$/);
+    expect(errors[join(home, ".cursor", "mcp.json")]).toBe("invalid JSON at line 3, column 89");
+    const outputs = [renderJson(r), renderJson(redact(r, home, project)), renderReport(r, home, style(false))];
+    for (const out of outputs) {
+      expect(out).not.toContain(OPENAI_KEY.slice(0, 12));
+      expect(out).not.toContain("API_KEY");
+      expect(out).not.toContain("oops");
+    }
+    expect(renderReport(r, home, style(false))).toContain("Skipped ~/.cursor/mcp.json (Cursor): invalid JSON at line 3, column 89.");
+  });
+
+  it("reports the end of a truncated JSON file", () => {
+    put(join(home, ".cursor", "mcp.json"), `{\n  "mcpServers": {`);
+    expect(run().unreadable[0]!.error).toBe("invalid JSON at line 2, column 18");
+  });
+
+  it("reads JSON files that start with a byte order mark", () => {
+    put(join(home, ".cursor", "mcp.json"), "\uFEFF" + JSON.stringify({ mcpServers: { gh: { command: "npx", args: ["-y", "gh-mcp@1.0.0"] } } }));
+    put(join(home, ".codex", "config.toml"), '\uFEFF[mcp_servers.fetch]\ncommand = "uvx"\nargs = ["mcp-server-fetch==2025.1.17"]\n');
+    const r = run();
+    expect(r.unreadable).toEqual([]);
+    expect(r.servers).toBe(2);
+  });
+
+  it("reports files it cannot read without their contents", () => {
+    if (process.getuid?.() === 0) return; // root reads mode 000 files
+    const path = join(home, ".cursor", "mcp.json");
+    put(path, { mcpServers: { x: { env: { TOKEN: OPENAI_KEY } } } }, 0o000);
+    // A file where a folder is expected (ENOTDIR) is simply absent.
+    put(join(home, ".codeium"), "not a folder");
+    const r = run();
+    expect(r.unreadable).toEqual([{ client: "cursor", path, error: "permission denied" }]);
+    expect(renderJson(r)).not.toContain(OPENAI_KEY.slice(0, 12));
+  });
+
+  it("detects secrets in names ending in KEY", () => {
+    const value = "q8W7e6R5t4Y3u2I1o0P9";
+    for (const key of ["OPENAI_KEY", "SUPABASE_SERVICE_ROLE_KEY", "stripe-key", "KEY", "openai_key"]) {
+      expect(classify(key, value), key).toBe("credential");
+    }
+    for (const key of ["PUBLIC_KEY", "vapid-public-key", "KEY_ID", "KEY_FILE", "KEY_PATH", "MONKEY", "KEYBOARD"]) {
+      expect(classify(key, value), key).toBeNull();
+    }
+  });
+
+  it("sees through cmd /c and wsl wrappers", () => {
+    put(join(home, ".cursor", "mcp.json"), {
+      mcpServers: {
+        a: { command: "cmd", args: ["/c", "npx", "-y", "@scope/server"] },
+        b: { command: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/s", "/C", "npx -y other-server"] },
+        c: { command: "wsl", args: ["-d", "Ubuntu", "uvx", "mcp-server-git"] },
+        d: { command: "wsl.exe", args: ["--exec", "npx", "-y", "pinned@1.2.3"] },
+        e: { command: "cmd /c npx -y @scope/server@1.0.0" },
+      },
+    });
+    put(join(home, ".claude.json"), { mcpServers: { a: { command: "npx", args: ["-y", "@scope/server"] } } });
+    const r = run();
+    const unpinned = r.findings.filter((f) => f.rule === "unpinned-package");
+    expect(unpinned.map((f) => [f.title.split(": ")[1], f.locations[0]!.pointer])).toEqual([
+      ["a (Claude Code)", "mcpServers.a.args[1]"],
+      ["a (Cursor)", "mcpServers.a.args[3]"],
+      ["b (Cursor)", "mcpServers.b.args[3]"],
+      ["c (Cursor)", "mcpServers.c.args[3]"],
+    ].sort((x, y) => (x[0]! < y[0]! ? -1 : 1)));
+    expect(r.findings.find((f) => f.rule === "duplicated-server")?.title).toBe("a is set up separately in 2 clients");
+  });
+
   it("does not list Toolstile's own endpoint as a duplicate", () => {
     put(join(home, ".cursor", "mcp.json"), { mcpServers: { toolstile: { url: "https://toolstile.com/mcp" }, cal: { url: "https://mcp.cal.com/mcp" } } });
     put(join(home, ".claude.json"), { mcpServers: { toolstile: { type: "http", url: "https://toolstile.com/mcp" }, cal: { type: "http", url: "https://mcp.cal.com/mcp/" } } });
@@ -249,10 +323,11 @@ describe("audit", () => {
 });
 
 describe("cli", () => {
+  // `pnpm test` builds first; fail rather than skip when the build is missing.
   const cli = join(import.meta.dirname, "..", "dist", "cli.js");
-  const hasBuild = existsSync(cli);
+  it("has a build to run", () => expect(existsSync(cli), "dist/cli.js is missing: run pnpm build").toBe(true));
 
-  it.skipIf(!hasBuild)("prints JSON and honours --fail-on", () => {
+  it("prints JSON and honours --fail-on", () => {
     put(join(home, ".cursor", "mcp.json"), { mcpServers: { gh: { command: "npx", args: ["-y", "gh-mcp"], env: { TOKEN: GITHUB_TOKEN } } } });
     const env = { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: "1" };
     const ok = execFileSync("node", [cli, "audit", "--json", "--no-project"], { env, encoding: "utf8" });
@@ -270,7 +345,20 @@ describe("cli", () => {
     expect(readFileSync(card, "utf8")).toContain("npx toolstile audit");
   });
 
-  it.skipIf(!hasBuild)("rejects unknown options", () => {
+  it("keeps secrets in broken files out of --json, with and without --redact", () => {
+    put(join(home, ".codex", "config.toml"), `[mcp_servers.x]\nAPI_KEY = "${OPENAI_KEY}\n`);
+    put(join(home, ".cursor", "mcp.json"), `{ "mcpServers": { "x": { "env": { "TOKEN": "${OPENAI_KEY}" } oops } } }`);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: "1" };
+    for (const extra of [[], ["--redact"]]) {
+      const out = execFileSync("node", [cli, "audit", "--json", "--no-project", ...extra], { env, encoding: "utf8" });
+      const parsed = JSON.parse(out) as { unreadable: { error: string }[] };
+      expect(parsed.unreadable.map((u) => u.error).sort()).toEqual(["invalid JSON at line 1, column 89", "invalid TOML at line 2, column 52"]);
+      expect(out).not.toContain(OPENAI_KEY.slice(0, 12));
+      expect(out).not.toContain("API_KEY");
+    }
+  });
+
+  it("rejects unknown options", () => {
     const r = spawnSync("node", [cli, "--nope"], { encoding: "utf8" });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain("Unknown option: --nope");

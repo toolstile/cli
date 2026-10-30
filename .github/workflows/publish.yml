@@ -20,6 +20,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history and branches, so the tag can be checked against main.
+          fetch-depth: 0
+
+      - name: Check the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main" >&2
+            exit 1
+          fi
 
       # No registry-url: npm 11.5.1+ (bundled with this Node) exchanges the
       # OIDC token itself, and a generated .npmrc would make every pnpm step
@@ -42,7 +51,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm build
+      # pnpm test builds dist first, then runs the unit and CLI tests against it.
       - run: pnpm test
 
       - name: Publish toolstile

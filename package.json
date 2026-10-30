@@ -37,8 +37,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "prepublishOnly": "pnpm typecheck && pnpm build && pnpm test"
+    "test": "pnpm build && vitest run",
+    "prepublishOnly": "pnpm typecheck && pnpm test"
   },
   "dependencies": {
     "smol-toml": "^1.9.1"

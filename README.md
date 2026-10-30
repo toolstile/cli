@@ -44,7 +44,9 @@ HIGH   Plaintext secret in github (Cursor)
 - Makes no network requests and collects no telemetry.
 - Never prints, stores or sends secret values. Findings name the file and key,
   for example `mcpServers.github.env.GITHUB_TOKEN`, and the kind of secret.
-- About 1,100 lines of TypeScript with one runtime dependency
+- Never quotes a config file: one that cannot be read or parsed is listed with a
+  reason and position only, for example `invalid TOML at line 3, column 12`.
+- About 1,400 lines of TypeScript with one runtime dependency
   ([smol-toml](https://github.com/squirrelchat/smol-toml), for Codex's TOML
   config) and an optional one ([resvg-js](https://github.com/thx/resvg-js), only
   to render `--card` as PNG). Read it before you run it.
@@ -63,6 +65,14 @@ HIGH   Plaintext secret in github (Cursor)
 
 `--fail-on high` makes it usable in CI or a pre-commit hook for repositories that
 check in `.mcp.json`, `.cursor/mcp.json` or `.vscode/mcp.json`.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The audit ran, and no finding reached the `--fail-on` level (or `--fail-on` was not set) |
+| 1 | A finding is at or above the `--fail-on` level |
+| 2 | Invalid options, or the audit itself failed |
 
 ## Scoring
 
