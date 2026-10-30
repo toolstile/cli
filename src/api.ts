@@ -23,6 +23,8 @@ export interface Account {
   name: string;
   expiresAt: string;
   workspaces: Workspace[];
+  /** The device named when this sign-in was approved. */
+  device?: { id: string; label: string } | null;
 }
 
 export interface DeviceCode {

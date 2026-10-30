@@ -22,6 +22,7 @@ export interface Context {
   stderr: NodeJS.WritableStream;
   style: Style;
   sleep?: (ms: number) => Promise<void>;
+  hostname?: () => string;
   openBrowser?: (url: string) => void;
 }
 
@@ -59,6 +60,9 @@ function defaultOpenBrowser(ctx: Context) {
   };
 }
 
+/** The name this machine suggests for itself: its hostname, without macOS's `.local`. */
+const machineName = (ctx: Context) => (ctx.hostname ?? hostname)().replace(/\.local$/i, "");
+
 const formatCode = (code: string) => (code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code);
 
 export async function login(ctx: Context, options: { server?: string; browser: boolean }): Promise<number> {
@@ -67,13 +71,17 @@ export async function login(ctx: Context, options: { server?: string; browser: b
   const server = normalizeServer(options.server ?? ctx.env.TOOLSTILE_URL ?? state.server);
   const api = ctx.api(server);
   const code = await api.deviceCode();
-  print(ctx, `Open this page on any device with a browser, sign in to Toolstile and enter the code:`);
+  // The page fills in the code and this machine's name; the name can be edited there and
+  // becomes the device this machine's agents are listed under.
+  const link = new URL(code.verification_uri_complete);
+  link.searchParams.set("device_name", machineName(ctx));
+  print(ctx, `Open this link on any device with a browser and approve the sign-in:`);
   print(ctx);
-  print(ctx, `  ${s.bold(code.verification_uri)}`);
-  print(ctx, `  ${s.bold(formatCode(code.user_code))}`);
+  print(ctx, `  ${s.bold(link.href)}`);
   print(ctx);
+  print(ctx, `Check that the page shows this code: ${s.bold(formatCode(code.user_code))}`);
   print(ctx, s.dim(`Waiting for approval. The code expires in ${Math.round(code.expires_in / 60)} minutes.`));
-  if (options.browser) (ctx.openBrowser ?? defaultOpenBrowser(ctx))(code.verification_uri);
+  if (options.browser) (ctx.openBrowser ?? defaultOpenBrowser(ctx))(link.href);
 
   const sleep = ctx.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   let interval = Math.max(code.interval, 1) * 1000;
@@ -107,9 +115,15 @@ export async function login(ctx: Context, options: { server?: string; browser: b
   }
   state.server = server;
   state.session = { token, email: account.email, expiresAt: account.expiresAt, server };
+  // The device named on the approval page. Agents still on an older device move to it at
+  // the next `mcp setup`.
+  if (account.device) state.device = account.device;
   saveState(state, stateEnv(ctx));
   print(ctx);
-  print(ctx, `Signed in as ${s.bold(account.email)}. Next: ${s.bold("toolstile mcp setup")}`);
+  print(
+    ctx,
+    `Signed in as ${s.bold(account.email)}${account.device ? ` on ${s.bold(account.device.label)}` : ""}. Next: ${s.bold("toolstile mcp setup")}`,
+  );
   return 0;
 }
 
@@ -205,7 +219,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
     device ??= await api.device(session.token, {
       workspaceId: workspace.id,
       id: state.device?.id,
-      label: options.deviceName ?? state.device?.label ?? hostname().replace(/\.local$/, ""),
+      label: options.deviceName ?? state.device?.label ?? machineName(ctx),
       rename: options.deviceName !== undefined,
     });
     state.device = device;
@@ -229,7 +243,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
           if (!(error instanceof ApiError && (error.status === 404 || error.status === 403))) throw error;
         })
       : Promise.resolve();
-  const deviceLabel = state.device?.label ?? hostname().replace(/\.local$/, "");
+  const deviceLabel = state.device?.label ?? machineName(ctx);
   const all = targets(ctx);
   const shown = all.filter((t) => t.detected || live(t.client) || state.agents[t.client] || enable.includes(t.client));
   if (!shown.length) {

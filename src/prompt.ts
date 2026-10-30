@@ -7,7 +7,18 @@ export interface Choice {
   checked: boolean;
 }
 
-/** Terminal checklist: arrows (or j/k) move, space toggles, a toggles all, enter saves. */
+/** Shortens text to `width` columns, keeping its end (the file name of a path). */
+function fitStart(text: string, width: number) {
+  return text.length <= width ? text : width < 2 ? "" : `…${text.slice(text.length - width + 1)}`;
+}
+const fitEnd = (text: string, width: number) =>
+  text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
+
+/**
+ * Terminal checklist: arrows (or j/k) move, space toggles, a toggles all, enter saves.
+ * Every line is fitted to the terminal width: a wrapped line takes two rows, and the redraw
+ * would then move up too few rows and leave copies of the title behind.
+ */
 export function checklist(
   title: string,
   choices: Choice[],
@@ -21,14 +32,19 @@ export function checklist(
   const help = options.single ? "↑/↓ move · enter select · esc cancel" : "↑/↓ move · space toggle · a all · enter save · esc cancel";
   const render = () => {
     if (drawn) output.write(`\x1b[${drawn}A\x1b[0J`);
+    // A spare column for glyphs some terminals draw double-width.
+    const width = Math.max(20, (output.columns || 80) - 2);
     const lines = [
-      title,
+      fitEnd(title, width),
       ...choices.map((c, i) => {
         const mark = options.single ? (i === cursor ? "●" : "○") : state[i] ? "◉" : "○";
         const pointer = i === cursor ? "›" : " ";
-        return `${pointer} ${mark} ${c.label}${c.hint ? `  \x1b[2m${c.hint}\x1b[22m` : ""}`;
+        const text = fitEnd(`${pointer} ${mark} ${c.label}`, width);
+        const room = width - text.length - 2;
+        const hint = c.hint && room >= 8 ? `  \x1b[2m${fitStart(c.hint, room)}\x1b[22m` : "";
+        return `${text}${hint}`;
       }),
-      `\x1b[2m${help}\x1b[22m`,
+      `\x1b[2m${fitEnd(help, width)}\x1b[22m`,
     ];
     output.write(`${lines.join("\n")}\n`);
     drawn = lines.length;

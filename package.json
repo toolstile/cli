@@ -1,6 +1,6 @@
 {
   "name": "toolstile",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Audit the MCP server configs your AI agents use for plaintext secrets, unpinned packages, auto-approved tools and duplicated setups, and connect those agents to Toolstile without putting tokens in their configs.",
   "keywords": [
     "mcp",
