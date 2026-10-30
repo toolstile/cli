@@ -2,12 +2,27 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { createApi } from "./api.js";
 import { renderCard, shareText, shareUrl } from "./card.js";
+import { type Context, login, logout, proxy, setup, UserError } from "./commands.js";
 import { audit } from "./index.js";
 import { redact, renderJson, renderReport, style } from "./report.js";
 import type { Severity } from "./types.js";
 
-const HELP = `toolstile: audit the MCP server configs your AI agents use
+const HELP = `toolstile: audit your MCP configs and connect your agents to Toolstile
+
+Usage
+  npx toolstile audit [options]     Check local MCP configs (offline, read-only)
+  npx toolstile auth login          Sign in, from any machine, with a code
+  npx toolstile auth logout         Sign out on this machine
+  npx toolstile mcp setup           Choose which agents here use Toolstile
+
+Run toolstile <command> --help for a command's options.
+  -h, --help          Show this help
+  -v, --version       Show the version
+`;
+
+const AUDIT_HELP = `toolstile audit: check the MCP server configs your AI agents use
 
 Usage
   npx toolstile audit [options]
@@ -28,8 +43,42 @@ Options
   --project <dir>     Also scan project configs in <dir> (default: current directory)
   --no-project        Scan only user-level configs
   --fail-on <level>   Exit with code 1 if any finding is at or above high, medium or low
-  -h, --help          Show this help
-  -v, --version       Show the version
+`;
+
+const AUTH_HELP = `toolstile auth: sign the CLI in to Toolstile
+
+Usage
+  npx toolstile auth login [--server <url>] [--no-browser]
+  npx toolstile auth logout
+
+login prints a link and a code. Open the link on any device with a browser
+(your laptop, your phone), sign in and approve the code. Nothing has to
+reach this machine, so it works over SSH and on servers without a browser.
+
+Options
+  --server <url>      Toolstile address (default https://toolstile.com, or TOOLSTILE_URL)
+  --no-browser        Do not try to open a browser on this machine
+`;
+
+const MCP_HELP = `toolstile mcp: connect the agents on this machine to Toolstile
+
+Usage
+  npx toolstile mcp setup [options]
+  npx toolstile mcp proxy --agent <agent>
+
+setup lists the agents found here and lets you turn each one on or off.
+Each enabled agent gets its own access, shown under this device in the
+Toolstile dashboard. Its config runs \`toolstile mcp proxy\`, which holds the
+agent's token in the CLI's own owner-only credentials file, so no secret
+is written into the agent's config.
+
+Options for setup
+  --enable <agents>     Turn these on without prompting (comma-separated)
+  --disable <agents>    Turn these off without prompting
+  --workspace <slug>    Workspace the agents use (default: the last one, or personal)
+  --device-name <name>  Name for this machine (default: its hostname)
+
+Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, gemini, cline
 `;
 
 function version(): string {
@@ -120,16 +169,95 @@ async function writeCard(path: string, svg: string): Promise<string> {
 
 const RANK: Record<Severity, number> = { high: 3, medium: 2, low: 1, info: 0 };
 
+/** `--name value`, `--name=value` and boolean `--name` flags for the auth and mcp commands. */
+function parseFlags(argv: string[], valued: string[], booleans: string[]) {
+  const flags: Record<string, string | true> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "-h" || a === "--help") return "help" as const;
+    const eq = a.indexOf("=");
+    const name = a.startsWith("--") ? (eq === -1 ? a.slice(2) : a.slice(2, eq)) : "";
+    if (valued.includes(name)) {
+      const v = eq === -1 ? argv[++i] : a.slice(eq + 1);
+      if (v === undefined || v.startsWith("-")) throw new UserError(`--${name} needs a value`);
+      flags[name] = v;
+    } else if (booleans.includes(name) && eq === -1) flags[name] = true;
+    else throw new UserError(`Unknown option: ${a}`);
+  }
+  return flags;
+}
+
+async function command(argv: string[]): Promise<number> {
+  const [group, action, ...rest] = argv;
+  const help = group === "auth" ? AUTH_HELP : MCP_HELP;
+  const actions = group === "auth" ? ["login", "logout"] : ["setup", "proxy"];
+  if (!action || action === "-h" || action === "--help" || action === "help") {
+    process.stdout.write(help);
+    return action ? 0 : 2;
+  }
+  if (!actions.includes(action)) {
+    process.stderr.write(`Unknown command: toolstile ${group} ${action}\n\n${help}`);
+    return 2;
+  }
+  const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+  const ctx: Context = {
+    home: homedir(),
+    platform: process.platform,
+    env: process.env,
+    version: version(),
+    api: (server) => createApi(server),
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    // The proxy's stdout carries MCP messages, so nothing else may be printed there.
+    style: style(action !== "proxy" && color),
+  };
+  try {
+    const flags =
+      action === "login"
+        ? parseFlags(rest, ["server"], ["no-browser"])
+        : action === "logout"
+          ? parseFlags(rest, [], [])
+          : action === "setup"
+            ? parseFlags(rest, ["enable", "disable", "workspace", "device-name"], [])
+            : parseFlags(rest, ["agent"], []);
+    if (flags === "help") {
+      process.stdout.write(help);
+      return 0;
+    }
+    const value = (name: string) => (typeof flags[name] === "string" ? (flags[name] as string) : undefined);
+    if (action === "login") return await login(ctx, { server: value("server"), browser: !flags["no-browser"] });
+    if (action === "logout") return await logout(ctx);
+    if (action === "setup")
+      return await setup(ctx, {
+        enable: value("enable"),
+        disable: value("disable"),
+        workspace: value("workspace"),
+        deviceName: value("device-name"),
+      });
+    return await proxy(ctx, value("agent"));
+  } catch (error) {
+    if (error instanceof UserError || (error as Error).name === "ApiError") {
+      process.stderr.write(`toolstile: ${(error as Error).message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
 async function main(): Promise<number> {
+  const argv = process.argv.slice(2);
+  if (argv[0] === "auth" || argv[0] === "mcp") return command(argv);
+  const help = argv[0] === "audit" ? AUDIT_HELP : HELP;
   let args: ReturnType<typeof parseArgs>;
   try {
-    args = parseArgs(process.argv.slice(2));
+    args = parseArgs(argv);
   } catch (error) {
-    process.stderr.write(`${(error as Error).message}\n\n${HELP}`);
+    process.stderr.write(`${(error as Error).message}\n\n${help}`);
     return 2;
   }
   if (args === "help") {
-    process.stdout.write(HELP);
+    process.stdout.write(help);
     return 0;
   }
   if (args === "version") {

@@ -220,8 +220,8 @@ function broadRoots(s: ServerEntry, home: string): string[] {
 
 const SEVERITY_ORDER = { high: 0, medium: 1, low: 2, info: 3 } as const;
 
-/** Toolstile's own gateway is meant to be added to every client. */
-const TOOLSTILE = /^url:([a-z0-9-]+\.)*toolstile\.com\//i;
+/** Toolstile's own gateway, directly or through `toolstile mcp proxy`, is meant to be added to every client. */
+const TOOLSTILE = /^(url:([a-z0-9-]+\.)*toolstile\.com\/|npm:toolstile$)/i;
 
 /** A path for a shell command: `~/...` under the home folder, single-quoted when needed. */
 export function shellPath(path: string, home: string): string {

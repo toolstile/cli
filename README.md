@@ -38,15 +38,16 @@ HIGH   Plaintext secret in github (Cursor)
        Fix: Reference an environment variable instead (for example ${API_TOKEN}) …
 ```
 
-## It only reads
+## The audit only reads
 
 - Reads config files on your machine. Writes nothing unless you ask for a card.
-- Makes no network requests and collects no telemetry.
+- Makes no network requests and collects no telemetry. (Only the separate
+  `auth` and `mcp` commands below talk to Toolstile, and only when you run them.)
 - Never prints, stores or sends secret values. Findings name the file and key,
   for example `mcpServers.github.env.GITHUB_TOKEN`, and the kind of secret.
 - Never quotes a config file: one that cannot be read or parsed is listed with a
   reason and position only, for example `invalid TOML at line 3, column 12`.
-- About 1,400 lines of TypeScript with one runtime dependency
+- About 2,500 lines of TypeScript with one runtime dependency
   ([smol-toml](https://github.com/squirrelchat/smol-toml), for Codex's TOML
   config) and an optional one ([resvg-js](https://github.com/thx/resvg-js), only
   to render `--card` as PNG). Read it before you run it.
@@ -105,6 +106,59 @@ values) and prints a ready-to-post link. To post the text report instead, add
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | |
 | Gemini CLI | `~/.gemini/settings.json` | `.gemini/settings.json` |
 | Cline | `cline_mcp_settings.json` in VS Code or Cursor storage | |
+
+## Connect your agents to Toolstile
+
+If you use [Toolstile](https://toolstile.com), the CLI can also sign in and set
+up the agents on a machine for you:
+
+```sh
+npx toolstile auth login
+npx toolstile mcp setup
+```
+
+`auth login` prints a link and a code. Open the link on any device with a
+browser (your laptop or phone), sign in and approve the code. Nothing has to
+reach the machine you are signing in, so it works over SSH, in containers and on
+servers without a browser.
+
+`mcp setup` lists the agents it finds (Claude Code, Claude Desktop, Cursor,
+Codex, VS Code, Windsurf, Gemini CLI, Cline) and lets you turn each one on or
+off. Run it again any time to change the selection. Each enabled agent appears
+under this machine in the Toolstile dashboard with its own access, so you can
+grant, limit or revoke it there; then choose which MCP servers it can use.
+
+```text
+Which agents on this machine should use Toolstile?
+› ◉ Claude Code  ~/.claude.json
+  ○ Cursor  ~/.cursor/mcp.json
+  ◉ Codex  ~/.codex/config.toml
+↑/↓ move · space toggle · a all · enter save · esc cancel
+```
+
+Without a terminal, pass the choice as flags:
+`npx toolstile mcp setup --enable claude-code,codex --disable cursor`.
+
+How it stays out of your configs: an enabled agent's config gets a `toolstile`
+server that runs `npx -y toolstile@<version> mcp proxy --agent <agent>`. The proxy
+relays the agent's MCP messages to Toolstile using that agent's own token, which
+lives only in the CLI's credentials file (`~/.config/toolstile/credentials.json`,
+readable by you alone; `%APPDATA%\toolstile` on Windows). No token is written
+into the agent's config, so `toolstile audit` has nothing to flag. JSON configs
+with comments are not rewritten; setup prints the entry to add yourself.
+
+`npx toolstile auth logout` ends the CLI's sign-in. Agents you enabled keep
+working until you turn them off with `mcp setup` or delete the device in the
+dashboard.
+
+| Option | Command | Meaning |
+| --- | --- | --- |
+| `--server <url>` | `auth login` | Toolstile address (default `https://toolstile.com`, or `TOOLSTILE_URL`) |
+| `--no-browser` | `auth login` | Do not try to open a browser on this machine |
+| `--enable <agents>` | `mcp setup` | Turn these on without prompting (comma-separated) |
+| `--disable <agents>` | `mcp setup` | Turn these off without prompting |
+| `--workspace <slug>` | `mcp setup` | Workspace the agents use (default: the last one, or personal) |
+| `--device-name <name>` | `mcp setup` | Name for this machine in the dashboard (default: its hostname) |
 
 ## Use it from code
 

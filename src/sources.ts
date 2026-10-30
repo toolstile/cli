@@ -30,7 +30,7 @@ export const CLIENT_NAMES: Record<ClientId, string> = {
   cline: "Cline",
 };
 
-function appData({ home, platform, env }: ScanOptions): string {
+export function appData({ home, platform, env }: Omit<ScanOptions, "cwd">): string {
   if (platform === "darwin") return join(home, "Library", "Application Support");
   if (platform === "win32") return env.APPDATA ?? join(home, "AppData", "Roaming");
   return env.XDG_CONFIG_HOME ?? join(home, ".config");
