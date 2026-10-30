@@ -118,7 +118,9 @@ npx toolstile mcp setup
 ```
 
 `auth login` prints a link and a code. Open the link on any device with a
-browser (your laptop or phone), sign in and approve the code. Nothing has to
+browser (your laptop or phone) and sign in. The page fills in the code and this
+machine's name; edit the name if you like, check the code matches and approve.
+The machine appears under that name in the Toolstile dashboard. Nothing has to
 reach the machine you are signing in, so it works over SSH, in containers and on
 servers without a browser.
 

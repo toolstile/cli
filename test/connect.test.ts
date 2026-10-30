@@ -211,6 +211,7 @@ function context(api: Api) {
     stderr: new PassThrough(),
     style: style(false),
     sleep: async () => {},
+    hostname: () => "build-mac.local",
     openBrowser: () => {},
   };
   return { ctx, output: () => text };
@@ -228,11 +229,30 @@ describe("auth and setup", () => {
     });
     const { ctx, output } = context(api);
     expect(await login(ctx, { browser: false })).toBe(0);
-    // Only the bare page: the code is typed there, never carried in the link.
-    expect(output()).toContain("https://t.test/device\n");
-    expect(output()).not.toContain("user_code=");
+    // The link fills in the code and this machine's name on the approval page.
+    expect(output()).toContain("https://t.test/device?user_code=ABCDEFGH&device_name=build-mac");
+    expect(output()).toContain("ABCD-EFGH");
     expect(output()).toContain("ABCD-EFGH");
     expect(loadState({ home, env: env() }).session).toMatchObject({ token: "session", email: "me@test.invalid" });
+  });
+
+  it("adopts the device named on the approval page", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const { api, calls } = fakeApi({
+      account: async () => ({
+        email: "me@test.invalid",
+        name: "Me",
+        expiresAt: "2030-01-01T00:00:00.000Z",
+        workspaces: [{ id: "w1", slug: "personal", name: "Personal", personal: true }],
+        device: { id: "d9", label: "Studio Mac" },
+      }),
+    });
+    const { ctx, output } = context(api);
+    await login(ctx, { browser: false });
+    expect(output()).toContain("on Studio Mac");
+    await setup(ctx, { enable: "cursor" });
+    expect(calls).toContain("device:Studio Mac");
+    expect(loadState({ home, env: env() }).device).toEqual({ id: "d9", label: "Studio Mac" });
   });
 
   it("reports a denied code", async () => {
@@ -398,5 +418,29 @@ describe("stdio proxy", () => {
       { jsonrpc: "2.0", id: 7, error: { code: -32000, message: expect.stringMatching(/toolstile mcp setup/) } },
     ]);
     expect(logs[0]).toMatch(/toolstile mcp setup/);
+  });
+});
+
+describe("checklist", () => {
+  it("keeps every line within the terminal width so redraws do not repeat the title", async () => {
+    const { checklist } = await import("../src/prompt.js");
+    const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode() {} });
+    const output = Object.assign(new PassThrough(), { columns: 40 });
+    let text = "";
+    output.on("data", (chunk: Buffer) => {
+      text += chunk.toString();
+    });
+    const done = checklist(
+      "Which agents on this machine should use Toolstile?",
+      [{ label: "Claude Desktop", hint: "~/Library/Application Support/Claude/claude_desktop_config.json", checked: false }],
+      input as never,
+      output as never,
+    );
+    input.write(" ");
+    input.write("\r");
+    expect(await done).toEqual([true]);
+    const visible = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n");
+    expect(Math.max(...visible.map((line) => line.length))).toBeLessThan(40);
+    expect(visible.some((line) => line.endsWith("config.json") && line.includes("…"))).toBe(true);
   });
 });
