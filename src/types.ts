@@ -34,12 +34,16 @@ export interface ServerEntry {
   file: string;
   /** Pointer to the server object, for example `mcpServers.github`. */
   pointer: string;
+  /** The same location as keys, for editing the file. */
+  path: string[];
   name: string;
   command?: string;
   args: string[];
   env: Record<string, string>;
   url?: string;
   headers: Record<string, string>;
+  /** The config key each header came from: `headers`, or Codex's `http_headers`. */
+  headerKeys: Record<string, string>;
   /** Other string fields that may carry credentials, such as Codex `bearer_token`. */
   extraSecrets: Record<string, string>;
   /** Tools listed under client auto-approval keys (`alwaysAllow`, `autoApprove`). */
@@ -58,6 +62,10 @@ export interface Finding {
   rule: string;
   severity: Severity;
   title: string;
+  /** What the finding is about, for example `github (Cursor)` or a file path. */
+  subject: string;
+  /** A short specific, for example the kind of secret or the package; may be empty. */
+  note: string;
   detail: string;
   fix: string;
   locations: Location[];

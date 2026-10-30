@@ -10,19 +10,23 @@ const at = (s: ServerEntry, ...keys: string[]): Location => ({
   pointer: keys.reduce(pointerJoin, s.pointer),
 });
 
-interface Secret {
+export interface Secret {
   server: ServerEntry;
   location: Location;
+  /** Keys below the server object, for example `["env", "TOKEN"]`. */
+  keys: string[];
   kind: string;
   hash: string;
+  /** Kept in memory only, for `audit --fix` to move; never printed. */
+  value: string;
 }
 
 const hash = (v: string) => createHash("sha256").update(v.trim()).digest("hex");
 
-function secretsOf(s: ServerEntry): Secret[] {
+export function secretsOf(s: ServerEntry): Secret[] {
   const out: Secret[] = [];
   const add = (value: string, kind: string, ...keys: string[]) =>
-    out.push({ server: s, location: at(s, ...keys), kind, hash: hash(value) });
+    out.push({ server: s, location: at(s, ...keys), keys, kind, hash: hash(value), value });
 
   for (const [k, v] of Object.entries(s.env)) {
     const kind = classify(k, v);
@@ -30,7 +34,7 @@ function secretsOf(s: ServerEntry): Secret[] {
   }
   for (const [k, v] of Object.entries(s.headers)) {
     const kind = classify(k, v);
-    if (kind) add(v, kind, "headers", k);
+    if (kind) add(v, kind, s.headerKeys[k] ?? "headers", k);
   }
   for (const [k, v] of Object.entries(s.extraSecrets)) {
     const kind = classify(k, v);
@@ -90,7 +94,7 @@ function afterWrapper(list: string[], start: number): number {
  * Splits `command` and `args` into words, handling configs that put the whole command in one string,
  * and skips Windows wrappers (`cmd /c npx …`, `wsl npx …`) so the real launcher comes first.
  */
-function words(s: ServerEntry): Words {
+export function words(s: ServerEntry): Words {
   if (!s.command) return { list: [], arg: [] };
   const oneString = s.args.length === 0 && /\s/.test(s.command.trim());
   let list = oneString ? split(s.command) : [s.command, ...s.args];
@@ -183,7 +187,7 @@ function parsePackage(registry: Package["registry"], spec: string, wordIndex: nu
     : { registry, name: spec, version: null, ...where };
 }
 
-const isPinned = (p: Package) =>
+export const isPinned = (p: Package) =>
   p.version !== null &&
   p.version !== "latest" &&
   p.version !== "next" &&
@@ -247,6 +251,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       rule: "plaintext-secret",
       severity: "high",
       title: `Plaintext secret in ${label(server)}`,
+      subject: label(server),
+      note: kinds,
       detail: `${what} written directly into the config file. Anything that can read the file, including backups, dotfile syncs and other tools, can use ${one ? "it" : "them"}.`,
       fix: "Reference an environment variable instead (for example ${API_TOKEN}, or \"Bearer ${API_TOKEN}\" in a header), or use the server's OAuth sign-in. Rotate the secret if the file was ever shared or synced.",
       locations: list.map((s) => s.location),
@@ -265,6 +271,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       rule: "copied-secret",
       severity: "medium",
       title: `Same ${list[0]!.kind} copied into ${files.size} files`,
+      subject: `${list[0]!.kind} in ${[...new Set(list.map((s) => s.server.name))].join(", ")}`,
+      note: [...new Set(list.map((s) => CLIENT_NAMES[s.server.client]))].join(", "),
       detail: `One credential is pasted into ${files.size} separate config files (${[...new Set(list.map((s) => CLIENT_NAMES[s.server.client]))].join(", ")}). Rotating or revoking it means finding every copy.`,
       fix: "Keep one copy in your environment or keychain and reference it from each client, or route the clients through one gateway.",
       locations: list.map((s) => s.location),
@@ -281,6 +289,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       rule: "readable-config",
       severity: "medium",
       title: "Config file with secrets is readable by other accounts",
+      subject: f.path,
+      note: `permissions ${f.mode.toString(8).padStart(3, "0")}, open to ${open}`,
       detail: `This file holds plaintext secrets and has permissions ${f.mode.toString(8).padStart(3, "0")}, and every folder above it is open to ${open}, so ${who} can read it.`,
       fix: `Restrict it to your user: chmod 600 ${shellPath(f.path, home)}`,
       locations: [{ file: f.path, pointer: "(file permissions)" }],
@@ -297,6 +307,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
             rule: "insecure-transport",
             severity: "high",
             title: `Unencrypted remote server: ${label(s)}`,
+            subject: label(s),
+            note: `http://${u.host}`,
             detail: `${u.host} is reached over plain http://, so requests, tool results and any credentials travel unencrypted.`,
             fix: "Use the server's https:// endpoint.",
             locations: [at(s, "url")],
@@ -315,6 +327,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
         rule: "unpinned-package",
         severity: "medium",
         title: `Unpinned ${where}: ${label(s)}`,
+        subject: label(s),
+        note: `${pkg.name}${pkg.version ? `@${pkg.version}` : ""}`,
         detail: `${pkg.name}${pkg.version ? `@${pkg.version}` : ""} resolves to whatever version is newest each time the server starts, so a compromised or broken release runs with this server's access.`,
         fix:
           pkg.registry === "docker"
@@ -333,6 +347,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
           rule: "privileged-container",
           severity: "high",
           title: `Container with host-level access: ${label(s)}`,
+          subject: label(s),
+          note: [...new Set(risky)].join(", "),
           detail: `The server runs with ${[...new Set(risky)].join(", ")}, which gives it effective control of the host.`,
           fix: "Remove --privileged and the Docker socket mount unless the server truly needs them.",
           locations: [at(s, "args")],
@@ -347,6 +363,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
         rule: "broad-filesystem",
         severity: "medium",
         title: `Filesystem server can read ${roots.includes("/") ? "the whole disk" : "your whole home folder"}: ${label(s)}`,
+        subject: label(s),
+        note: `allowed root ${roots.join(", ")}`,
         detail: `Allowed root ${roots.join(", ")} includes SSH keys, cloud credentials and every other config file.`,
         fix: "Allow only the project folders the agent needs.",
         locations: [at(s, "args")],
@@ -359,6 +377,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
         rule: "auto-approved-tools",
         severity: "low",
         title: `${s.autoApproved.length} tool${s.autoApproved.length === 1 ? "" : "s"} run without asking: ${label(s)}`,
+        subject: label(s),
+        note: `${s.autoApproved.slice(0, 4).join(", ")}${s.autoApproved.length > 4 ? `, +${s.autoApproved.length - 4} more` : ""}`,
         detail: `Auto-approved: ${s.autoApproved.slice(0, 6).join(", ")}${s.autoApproved.length > 6 ? ", …" : ""}. A prompt injection in any content the agent reads can call these.`,
         fix: "Keep auto-approval to read-only tools.",
         locations: [at(s)],
@@ -375,6 +395,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       title: all
         ? `${CLIENT_NAMES[a.client]} approves ${a.subject === "mcp__*" ? "every MCP tool" : a.subject} without asking`
         : `${CLIENT_NAMES[a.client]} runs every tool of ${a.subject.replace(/^mcp__/, "").replace(/__\*$/, "")} without asking`,
+      subject: `${a.subject} (${CLIENT_NAMES[a.client]})`,
+      note: all ? "every tool" : "every tool of the server",
       detail: `Permission rule ${a.subject} skips the confirmation prompt, including for write and delete tools. A prompt injection in a web page, issue or email the agent reads can call them.`,
       fix: "Allow specific read-only tools (mcp__server__tool) instead of whole servers.",
       locations: [a.location],
@@ -396,6 +418,8 @@ export function runChecks(d: Discovery, home: string): Finding[] {
       rule: "duplicated-server",
       severity: "info",
       title: `${list[0]!.name} is set up separately in ${clients.length} clients`,
+      subject: list[0]!.name,
+      note: clients.map((c) => CLIENT_NAMES[c]).join(", "),
       detail: `Configured in ${clients.map((c) => CLIENT_NAMES[c]).join(", ")}. Each copy has its own settings and sign-in to keep in sync and revoke.`,
       fix: "Nothing to fix; listed so you know where each copy lives.",
       locations: list.map((s) => at(s)),

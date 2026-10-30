@@ -285,7 +285,7 @@ describe("audit", () => {
   });
 
   it("scores distinct problems on a curve", () => {
-    const f = (weight: number) => ({ rule: "x", severity: "high" as const, title: "", detail: "", fix: "", locations: [], weight });
+    const f = (weight: number) => ({ rule: "x", severity: "high" as const, title: "", subject: "", note: "", detail: "", fix: "", locations: [], weight });
     expect(score([])).toEqual({ score: 100, grade: "A" });
     expect(score([f(10)])).toEqual({ score: 83, grade: "B" });
     expect(score([f(10), f(10)])).toEqual({ score: 71, grade: "C" });
@@ -337,7 +337,9 @@ describe("cli", () => {
 
     const failed = spawnSync("node", [cli, "--no-project", "--fail-on", "high"], { env, encoding: "utf8" });
     expect(failed.status).toBe(1);
-    expect(failed.stdout).toContain("Plaintext secret in gh (Cursor)");
+    expect(failed.stdout).toContain("Plaintext secrets (1)");
+    expect(failed.stdout).toContain("gh (Cursor)  GitHub token");
+    expect(failed.stdout).toContain("npx toolstile audit --fix");
 
     const card = join(home, "card.svg");
     const withCard = spawnSync("node", [cli, "--no-project", "--card", card], { env, encoding: "utf8" });
