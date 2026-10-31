@@ -92,9 +92,9 @@ describe("agent config entries", () => {
     expect(writeEntry(t, command("gemini"))).toBe("unchanged");
 
     const cursor = target("cursor");
-    put(cursor.path, JSON.stringify({ mcpServers: { toolstile: { url: "https://toolstile.com/mcp" } } }));
+    put(cursor.path, JSON.stringify({ mcpServers: { toolstile: { url: "https://mcp.toolstile.com/mcp" } } }));
     expect(writeEntry(cursor, null)).toBe("unchanged");
-    expect(readEntry(cursor)).toEqual({ url: "https://toolstile.com/mcp" });
+    expect(readEntry(cursor)).toEqual({ url: "https://mcp.toolstile.com/mcp" });
     expect(writeEntry(cursor, command("cursor"))).toBe("replaced");
   });
 
@@ -111,7 +111,7 @@ describe("agent config entries", () => {
 
   it("refuses Codex entries it cannot edit instead of crashing", () => {
     const t = target("codex");
-    put(t.path, "[mcp_servers]\ntoolstile = { url = \"https://toolstile.com/mcp\" }\n");
+    put(t.path, "[mcp_servers]\ntoolstile = { url = \"https://mcp.toolstile.com/mcp\" }\n");
     expect(() => writeEntry(t, command("codex"))).toThrow(ManualEditError);
   });
 
@@ -132,20 +132,43 @@ describe("agent config entries", () => {
 describe("credentials file", () => {
   it("is owner-only and survives a round trip", () => {
     const state = loadState({ home, env: env() });
-    expect(state.server).toBe("https://toolstile.com");
-    state.agents.cursor = { id: "a", workspaceId: "w", server: "https://toolstile.com", label: "Cursor", token: "ts_x" };
+    expect(state.server).toBe("https://app.toolstile.com");
+    state.agents.cursor = { id: "a", workspaceId: "w", server: "https://app.toolstile.com", label: "Cursor", token: "ts_x" };
     saveState(state, { home, env: env() });
     expect(statSync(statePath({ home, env: env() })).mode & 0o777).toBe(0o600);
     expect(statSync(join(home, "cfg")).mode & 0o777).toBe(0o700);
     expect(loadState({ home, env: env() }).agents.cursor?.token).toBe("ts_x");
     // A project's environment cannot point saved tokens at another server.
     expect(loadState({ home, env: { ...env(), TOOLSTILE_URL: "https://evil.example" } }).server).toBe(
-      "https://toolstile.com",
+      "https://app.toolstile.com",
     );
   });
 
+  it("moves a sign-in saved for the old bare-domain address to the app and gateway hosts", () => {
+    mkdirSync(join(home, "cfg"), { recursive: true });
+    writeFileSync(
+      statePath({ home, env: env() }),
+      JSON.stringify({
+        server: "https://toolstile.com",
+        session: { token: "s", email: "me@test.invalid", expiresAt: "2030-01-01T00:00:00.000Z", server: "https://toolstile.com" },
+        agents: {
+          cursor: { id: "a", workspaceId: "w", server: "https://toolstile.com", label: "Cursor", token: "ts_x" },
+          codex: { id: "b", workspaceId: "w", server: "https://other.example", label: "Codex", token: "ts_y" },
+        },
+      }),
+    );
+    const state = loadState({ home, env: env() });
+    expect(state.server).toBe("https://app.toolstile.com");
+    expect(state.session?.server).toBe("https://app.toolstile.com");
+    expect(state.agents.cursor).toMatchObject({
+      server: "https://app.toolstile.com",
+      endpoint: "https://mcp.toolstile.com/mcp",
+    });
+    expect(state.agents.codex).toEqual({ id: "b", workspaceId: "w", server: "https://other.example", label: "Codex", token: "ts_y" });
+  });
+
   it("accepts only https servers, or http on loopback", () => {
-    expect(normalizeServer("https://toolstile.com/app")).toBe("https://toolstile.com");
+    expect(normalizeServer("https://app.toolstile.com/personal")).toBe("https://app.toolstile.com");
     expect(normalizeServer("http://localhost:4311")).toBe("http://localhost:4311");
     expect(() => normalizeServer("http://toolstile.com")).toThrow(/https/);
   });
@@ -302,10 +325,37 @@ describe("auth and setup", () => {
     ctx.env = { ...ctx.env, TOOLSTILE_URL: "https://other.example" };
     await login(ctx, { browser: false });
     // The old session is signed out where it was issued; the new one belongs to the new server.
-    expect(servers).toEqual(["https://toolstile.com", "https://toolstile.com", "https://other.example", "https://toolstile.com"]);
+    expect(servers).toEqual([
+      "https://app.toolstile.com",
+      "https://app.toolstile.com",
+      "https://other.example",
+      "https://app.toolstile.com",
+    ]);
     const state = loadState({ home, env: ctx.env });
     expect(state.session?.server).toBe("https://other.example");
-    expect(state.agents.cursor?.server).toBe("https://toolstile.com");
+    expect(state.agents.cursor?.server).toBe("https://app.toolstile.com");
+  });
+
+  it("sends each agent to the gateway URL its server reports, or the server's own /mcp", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const workspaces = [{ id: "w1", slug: "personal", name: "Personal", personal: true }];
+    const account = { email: "me@test.invalid", name: "Me", expiresAt: "2030-01-01T00:00:00.000Z", workspaces };
+    const reported = fakeApi({ account: async () => ({ ...account, mcpUrl: "https://mcp.toolstile.com/mcp" }) });
+    const { ctx } = context(reported.api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor" });
+    expect(loadState({ home, env: env() }).agents.cursor?.endpoint).toBe("https://mcp.toolstile.com/mcp");
+    for (const [mcpUrl, expected] of [
+      [undefined, "https://app.toolstile.com/mcp"],
+      ["http://mcp.toolstile.com/mcp", "https://app.toolstile.com/mcp"],
+      ["https://user:pass@mcp.toolstile.com/mcp", "https://app.toolstile.com/mcp"],
+      ["not a url", "https://app.toolstile.com/mcp"],
+      ["https://gateway.example/mcp", "https://gateway.example/mcp"],
+    ] as const) {
+      ctx.api = () => fakeApi({ account: async () => ({ ...account, mcpUrl }) }).api;
+      await setup(ctx, { enable: "cursor" });
+      expect(loadState({ home, env: env() }).agents.cursor?.endpoint, String(mcpUrl)).toBe(expected);
+    }
   });
 
   it("re-creates an agent that was deleted from the dashboard", async () => {

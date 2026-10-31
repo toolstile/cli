@@ -165,7 +165,7 @@ values) and prints a ready-to-post link. To post the text report instead, add
 
 ## Connect your agents to Toolstile
 
-If you use [Toolstile](https://toolstile.com), the CLI can also sign in and set
+If you use [Toolstile](https://www.toolstile.com), the CLI can also sign in and set
 up the agents on a machine for you:
 
 ```sh
@@ -211,7 +211,7 @@ dashboard.
 
 | Option | Command | Meaning |
 | --- | --- | --- |
-| `--server <url>` | `auth login` | Toolstile address (default `https://toolstile.com`, or `TOOLSTILE_URL`) |
+| `--server <url>` | `auth login` | Toolstile address (default `https://app.toolstile.com`, or `TOOLSTILE_URL`) |
 | `--no-browser` | `auth login` | Do not try to open a browser on this machine |
 | `--enable <agents>` | `mcp setup` | Turn these on without prompting (comma-separated) |
 | `--disable <agents>` | `mcp setup` | Turn these off without prompting |
@@ -229,7 +229,7 @@ const { grade, findings } = audit();
 ## About
 
 Built by [Akshit Kr Nagpal](https://akshit.io) as part of
-[Toolstile](https://toolstile.com), an MCP gateway that keeps upstream
+[Toolstile](https://www.toolstile.com), an MCP gateway that keeps upstream
 credentials off your machines and lets you choose which tools each agent can use.
 The audit works on its own and does not require a Toolstile account.
 

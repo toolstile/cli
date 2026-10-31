@@ -72,7 +72,7 @@ login prints a link and a code. Open the link on any device with a browser
 reach this machine, so it works over SSH and on servers without a browser.
 
 Options
-  --server <url>      Toolstile address (default https://toolstile.com, or TOOLSTILE_URL)
+  --server <url>      Toolstile address (default https://app.toolstile.com, or TOOLSTILE_URL)
   --no-browser        Do not try to open a browser on this machine
 `;
 

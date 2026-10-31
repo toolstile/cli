@@ -39,12 +39,27 @@ export function normalizeServer(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new UserError(`--server must be a URL, for example https://toolstile.com`);
+    throw new UserError(`--server must be a URL, for example https://app.toolstile.com`);
   }
   const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(url.hostname);
   if (url.protocol !== "https:" && !(loopback && url.protocol === "http:"))
     throw new UserError("--server must use https://");
   return url.origin;
+}
+
+/** A gateway URL the server reported: HTTPS (or loopback HTTP) with no credentials, else undefined. */
+export function gatewayUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(url.hostname);
+  if (url.username || url.password || url.search || url.hash) return undefined;
+  if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) return undefined;
+  return url.href;
 }
 
 function defaultOpenBrowser(ctx: Context) {
@@ -210,6 +225,8 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
   const both = enable.find((c) => disable.includes(c));
   if (both) throw new UserError(`${CLIENT_NAMES[both]} is in both --enable and --disable.`);
 
+  // The gateway can be on another host; only an HTTPS URL from this server is used.
+  const endpoint = gatewayUrl(account.mcpUrl) ?? `${state.server}/mcp`;
   const workspace = await chooseWorkspace(ctx, state, account.workspaces, options.workspace);
   state.workspace = { id: workspace.id, slug: workspace.slug, name: workspace.name };
   saveState(state, stateEnv(ctx));
@@ -288,6 +305,10 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
     const want = wanted.has(target.client);
     const link = state.agents[target.client];
     if (want) {
+      if (live(target.client) && link && link.endpoint !== endpoint) {
+        link.endpoint = endpoint;
+        saveState(state, stateEnv(ctx));
+      }
       if (!live(target.client)) {
         if (link) await removeRemote(link).catch(() => undefined);
         const { id: deviceId } = await ensureDevice();
@@ -296,6 +317,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
           id: created.id,
           workspaceId: workspace.id,
           server: state.server,
+          endpoint,
           label: created.label,
           token: created.token,
         };
@@ -350,7 +372,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
   }
   if ([...wanted].length) {
     print(ctx);
-    print(ctx, `Choose which MCP servers they can use: ${state.server}/app/${workspace.slug}/access`);
+    print(ctx, `Choose which MCP servers they can use: ${state.server}/${workspace.slug}/access`);
   }
   return manual.length ? 1 : 0;
 }
@@ -363,7 +385,7 @@ export async function proxy(ctx: Context, agent: string | undefined): Promise<nu
   if (!link) throw new UserError(`${CLIENT_NAMES[client]} is not enabled on this machine. Run toolstile mcp setup.`);
   await runProxy({
     // The token goes only to the server that issued it, whatever the environment says.
-    endpoint: `${link.server}/mcp`,
+    endpoint: link.endpoint ?? `${link.server}/mcp`,
     token: link.token,
     input: ctx.stdin as Readable,
     output: ctx.stdout as Writable,

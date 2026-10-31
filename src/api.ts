@@ -25,6 +25,8 @@ export interface Account {
   workspaces: Workspace[];
   /** The device named when this sign-in was approved. */
   device?: { id: string; label: string } | null;
+  /** The gateway URL agents use; it can be on another host than this API. */
+  mcpUrl?: string;
 }
 
 export interface DeviceCode {
