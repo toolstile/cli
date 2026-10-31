@@ -3,7 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClientId } from "./types.js";
 
-export const DEFAULT_SERVER = "https://toolstile.com";
+export const DEFAULT_SERVER = "https://app.toolstile.com";
+/** Toolstile's gateway, on its own host since the app moved off the bare domain. */
+export const DEFAULT_MCP_URL = "https://mcp.toolstile.com/mcp";
+/** Where Toolstile served the app and gateway before; it now only redirects. */
+const LEGACY_SERVER = "https://toolstile.com";
 
 export interface AgentLink {
   /** The agent's authorization ID in Toolstile, valid in one workspace. */
@@ -11,6 +15,8 @@ export interface AgentLink {
   workspaceId: string;
   /** The Toolstile origin that issued the token; the proxy sends it nowhere else. */
   server: string;
+  /** That server's gateway URL, as it reported it; `${server}/mcp` when absent. */
+  endpoint?: string;
   label: string;
   /** The agent's own gateway token; only `toolstile mcp proxy` reads it. */
   token: string;
@@ -56,7 +62,7 @@ export function loadState(opts?: StateEnv): State {
   }
   try {
     const data = JSON.parse(text) as Partial<State>;
-    return { ...fallback, ...data, agents: data.agents ?? {} };
+    return moveLegacyServer({ ...fallback, ...data, agents: data.agents ?? {} });
   } catch {
     throw new Error(`${statePath(opts)} is not valid JSON. Delete it and run toolstile auth login again.`);
   }
@@ -75,4 +81,16 @@ export function saveState(state: State, opts?: StateEnv): void {
   } finally {
     rmSync(temp, { force: true });
   }
+}
+
+/** Sign-ins and agents saved for the old bare-domain address keep working on the new hosts. */
+function moveLegacyServer(state: State): State {
+  if (state.server === LEGACY_SERVER) state.server = DEFAULT_SERVER;
+  if (state.session?.server === LEGACY_SERVER) state.session.server = DEFAULT_SERVER;
+  for (const link of Object.values(state.agents))
+    if (link?.server === LEGACY_SERVER) {
+      link.server = DEFAULT_SERVER;
+      link.endpoint ??= DEFAULT_MCP_URL;
+    }
+  return state;
 }

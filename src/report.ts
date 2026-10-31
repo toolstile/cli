@@ -195,7 +195,7 @@ export function renderReport(r: AuditResult, home: string, s: Style, redacted = 
   lines.push(s.dim("Secret values are never printed."));
   if (!redacted) lines.push(s.dim(wrap("Posting this? Run with --redact to hide your paths, or --card for an image with only the grade.", width)));
   else lines.push(s.dim("Share an image with only the grade: npx toolstile audit --card"));
-  lines.push(s.dim(wrap("Keep credentials off your machines and control each agent's tools: https://toolstile.com/?ref=cli", width)), "");
+  lines.push(s.dim(wrap("Keep credentials off your machines and control each agent's tools: https://www.toolstile.com/?ref=cli", width)), "");
   return lines.join("\n");
 }
 
