@@ -2,7 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync 
 import { basename, dirname, join } from "node:path";
 import { applyEdits, modify } from "jsonc-parser";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { withoutTomlTable, writeText } from "./agents.js";
+import { withoutTomlTable, writeText, updateText } from "./agents.js";
 import { isPinned, packageOf, type Secret, secretsOf, shellPath, words } from "./checks.js";
 import type { ReadStream, WriteStream } from "node:tty";
 import { audit } from "./index.js";
@@ -536,32 +536,28 @@ export function applyFixes(plan: Plan, chosen: Fix[], opts: { home: string; now?
   const secrets = ok.flatMap((f) => f.secrets);
   let profileAdded = false;
   if (secrets.length) {
-    const stored = readSecrets(plan.secretsFile);
-    let text = "";
-    try {
-      text = readFileSync(plan.secretsFile, "utf8");
-    } catch {
-      text = "# MCP server secrets moved out of agent configs by toolstile audit --fix.\n# Only your user can read this file. Loaded by your shell; see the line in your shell profile.\n";
-    }
-    for (const { name, value } of secrets) {
-      if (stored.get(name) === value) continue;
-      stored.set(name, value);
-      text = `${text.replace(/\n?$/, "\n")}export ${name}=${quote(value)}\n`;
-    }
     mkdirSync(dirname(plan.secretsFile), { recursive: true, mode: 0o700 });
-    writeText(plan.secretsFile, text);
+    updateText(plan.secretsFile, (current) => {
+      const stored = readSecrets(plan.secretsFile);
+      let text = current ?? "# MCP server secrets moved out of agent configs by toolstile audit --fix.\n# Only your user can read this file. Loaded by your shell; see the line in your shell profile.\n";
+      for (const { name, value } of secrets) {
+        if (stored.get(name) === value) continue;
+        if (stored.has(name)) throw new Error("A saved secret changed; run --fix again.");
+        stored.set(name, value);
+        text = `${text.replace(/\n?$/, "\n")}export ${name}=${quote(value)}\n`;
+      }
+      return text;
+    });
     chmodSync(plan.secretsFile, 0o600);
     if (plan.profile) {
-      let profile = "";
-      try {
-        profile = readFileSync(plan.profile.path, "utf8");
-      } catch {}
-      if (!profile.includes(shellPath(plan.secretsFile, opts.home)) && !profile.includes(plan.secretsFile)) {
-        const mode = existsSync(plan.profile.path) ? statSync(plan.profile.path).mode & 0o777 : 0o644;
-        writeText(plan.profile.path, `${profile}${profile && !profile.endsWith("\n") ? "\n" : ""}\n${plan.profile.line}\n`);
-        chmodSync(plan.profile.path, mode);
+      const mode = existsSync(plan.profile.path) ? statSync(plan.profile.path).mode & 0o777 : 0o644;
+      updateText(plan.profile.path, (current) => {
+        const profile = current ?? "";
+        if (profile.includes(shellPath(plan.secretsFile, opts.home)) || profile.includes(plan.secretsFile)) return profile;
         profileAdded = true;
-      }
+        return `${profile}${profile && !profile.endsWith("\n") ? "\n" : ""}\n${plan.profile!.line}\n`;
+      });
+      chmodSync(plan.profile.path, mode);
     }
   }
 
@@ -580,7 +576,7 @@ export function applyFixes(plan: Plan, chosen: Fix[], opts: { home: string; now?
       copyFileSync(file, copy);
       chmodSync(copy, 0o600);
     }
-    for (const [file, { after }] of texts) writeText(file, after);
+    for (const [file, { before, after }] of texts) writeText(file, after, before);
   }
   for (const fix of ok) for (const op of fix.ops) if (op.type === "chmod") chmodSync(op.file, op.mode);
   return { applied: ok, failed, backups, profileAdded };

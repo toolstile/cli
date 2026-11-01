@@ -494,3 +494,257 @@ describe("checklist", () => {
     expect(visible.some((line) => line.endsWith("config.json") && line.includes("…"))).toBe(true);
   });
 });
+
+describe("credential operation conflicts", () => {
+  it("publishes disable before cleanup so concurrent enable issues fresh access", async () => {
+    const { api, agents } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor" });
+    const opts = { home, env: env() };
+    const oldCursor = loadState(opts).agents.cursor!.id;
+    let release!: () => void;
+    let started!: () => void;
+    const reachedCleanup = new Promise<void>((resolve) => { started = resolve; });
+    const remove = api.removeAgent;
+    api.removeAgent = async (...args) => {
+      if (args[2] === oldCursor) { started(); await new Promise<void>((resolve) => { release = resolve; }); }
+      return remove(...args);
+    };
+    const disabling = setup(ctx, { disable: "cursor" });
+    const rejected = expect(disabling).rejects.toThrow("changed in another command");
+    await reachedCleanup;
+    expect(loadState(opts).agents.cursor).toBeUndefined();
+    expect(await setup(ctx, { enable: "cursor,codex" })).toBe(0);
+    release(); await rejected;
+    const winner = loadState(opts);
+    expect(winner.agents.cursor!.id).not.toBe(oldCursor);
+    expect(agents.has(winner.agents.cursor!.id)).toBe(true);
+    expect(agents.has(winner.agents.codex!.id)).toBe(true);
+    expect(agents.has(oldCursor)).toBe(false);
+    expect(readEntry(target("cursor"))).toBeTruthy();
+    expect(readEntry(target("codex"))).toBeTruthy();
+  });
+
+  it("keeps failed remote disable locally removed and explains cleanup", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor" });
+    api.removeAgent = async () => { throw new ApiError(503, "unavailable"); };
+    await expect(setup(ctx, { disable: "cursor" })).rejects.toThrow("Disabled locally, but remote cleanup failed");
+    expect(loadState({ home, env: env() }).agents.cursor).toBeUndefined();
+    expect(readEntry(target("cursor"))).toBeUndefined();
+  });
+
+  it("rejects stale later-agent config writes after concurrent disable", async () => {
+    const { api, agents } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor,codex" });
+    const opts = { home, env: env() };
+    const state = loadState(opts);
+    const oldCursor = state.agents.cursor!.id;
+    const codex = state.agents.codex!.id;
+    state.agents.cursor!.workspaceId = "old-workspace";
+    saveState(state, opts);
+    let release!: () => void;
+    let started!: () => void;
+    const reachedCleanup = new Promise<void>((resolve) => { started = resolve; });
+    const remove = api.removeAgent;
+    api.removeAgent = async (...args) => {
+      if (args[2] === oldCursor) { started(); await new Promise<void>((resolve) => { release = resolve; }); }
+      return remove(...args);
+    };
+    const replacing = setup(ctx, { enable: "cursor" });
+    const rejected = expect(replacing).rejects.toThrow("changed in another command");
+    await reachedCleanup;
+    expect(await setup(ctx, { disable: "codex" })).toBe(0);
+    release(); await rejected;
+    expect(loadState(opts).agents.codex).toBeUndefined();
+    expect(readEntry(target("codex"))).toBeUndefined();
+    expect(agents.has(codex)).toBe(false);
+  });
+
+  it("does not recreate config after disable races with delayed replacement cleanup", async () => {
+    const { api, agents } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor" });
+    const opts = { home, env: env() };
+    const state = loadState(opts);
+    state.agents.cursor!.workspaceId = "old-workspace";
+    saveState(state, opts);
+    let release!: () => void;
+    let started!: () => void;
+    const reachedCleanup = new Promise<void>((resolve) => { started = resolve; });
+    const remove = api.removeAgent;
+    api.removeAgent = async (...args) => {
+      if (args[2] === "a1") { started(); await new Promise<void>((resolve) => { release = resolve; }); }
+      return remove(...args);
+    };
+    const replacing = setup(ctx, { enable: "cursor" });
+    await reachedCleanup;
+    expect(loadState(opts).agents.cursor?.id).toBe("a2");
+    expect(await setup(ctx, { disable: "cursor" })).toBe(0);
+    release();
+    expect(await replacing).toBe(0);
+    expect(loadState(opts).agents.cursor).toBeUndefined();
+    expect(readEntry(target("cursor"))).toBeUndefined();
+    expect([...agents.keys()]).toEqual([]);
+  });
+
+  it("cleans up the losing setup's new authorization and preserves the concurrent winner and config", async () => {
+    const { api, calls, agents } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    let release!: () => void;
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    const add = api.addAgent;
+    let count = 0;
+    api.addAgent = async (...args) => {
+      const created = await add(...args);
+      if (++count === 1) {
+        started();
+        await new Promise<void>((resolve) => { release = resolve; });
+      }
+      return created;
+    };
+    const losing = setup(ctx, { enable: "cursor" });
+    const rejected = expect(losing).rejects.toThrow("changed in another command");
+    await firstStarted;
+    expect(await setup(ctx, { enable: "cursor" })).toBe(0);
+    const before = readFileSync(target("cursor").path, "utf8");
+    release(); await rejected;
+    expect(loadState({ home, env: env() }).agents.cursor?.id).toBe("a2");
+    expect([...agents.keys()]).toEqual(["a2"]);
+    expect(calls.filter((c) => c.startsWith("remove:"))).toEqual(["remove:a1"]);
+    expect(readFileSync(target("cursor").path, "utf8")).toBe(before);
+  });
+
+  it("preserves an older authorization until its replacement has been saved", async () => {
+    const { api, agents, calls } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "cursor" });
+    const opts = { home, env: env() };
+    const stale = loadState(opts);
+    stale.agents.cursor!.workspaceId = "old-workspace";
+    saveState(stale, opts);
+    const add = api.addAgent;
+    api.addAgent = async (...args) => {
+      expect(agents.has("a1")).toBe(true);
+      const created = await add(...args);
+      const winner = loadState(opts);
+      winner.device!.label = "concurrent winner";
+      saveState(winner, opts);
+      return created;
+    };
+    await expect(setup(ctx, { enable: "cursor" })).rejects.toThrow("changed in another command");
+    expect([...agents.keys()]).toEqual(["a1"]);
+    expect(calls).not.toContain("remove:a1");
+    expect(loadState(opts).agents.cursor?.id).toBe("a1");
+    expect(loadState(opts).device?.label).toBe("concurrent winner");
+  });
+
+  it("does not revoke a newly issued authorization that the winning state already retains", async () => {
+    const { api, agents } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    const add = api.addAgent;
+    api.addAgent = async (...args) => {
+      const created = await add(...args);
+      const winner = loadState({ home, env: env() });
+      winner.agents.cursor = {
+        ...created, workspaceId: "w1", server: winner.server, endpoint: "https://gateway.invalid/mcp",
+      };
+      saveState(winner, { home, env: env() });
+      return created;
+    };
+    await expect(setup(ctx, { enable: "cursor" })).rejects.toThrow("changed in another command");
+    expect(agents.has("a1")).toBe(true);
+    expect(loadState({ home, env: env() }).agents.cursor?.id).toBe("a1");
+    expect(readEntry(target("cursor"))).toBeUndefined();
+  });
+
+  it.each([404, 503])("reports cleanup failures but accepts an already removed authorization (%s)", async (status) => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    const add = api.addAgent;
+    api.addAgent = async (...args) => {
+      const created = await add(...args);
+      const winner = loadState({ home, env: env() });
+      winner.device!.label = "winner";
+      saveState(winner, { home, env: env() });
+      return created;
+    };
+    api.removeAgent = async () => { throw new ApiError(status, "fixture failure"); };
+    await expect(setup(ctx, { enable: "cursor" })).rejects.toThrow(status === 404 ? "changed in another command" : "Agent cleanup failed");
+    expect(loadState({ home, env: env() }).device?.label).toBe("winner");
+    expect(readEntry(target("cursor"))).toBeUndefined();
+  });
+
+  it("revokes only the losing login's new session and leaves the existing session usable", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    api.deviceToken = async () => ({ access_token: "losing-session", expires_in: 1 });
+    const revoked: string[] = [];
+    api.signOut = async (token) => { revoked.push(token); };
+    const account = api.account;
+    api.account = async (token) => {
+      const winner = loadState({ home, env: env() });
+      winner.device = { id: "winner", label: "winner" };
+      saveState(winner, { home, env: env() });
+      return account(token);
+    };
+    await expect(login(ctx, { browser: false })).rejects.toThrow("changed in another command");
+    expect(revoked).toEqual(["losing-session"]);
+    expect(loadState({ home, env: env() }).session?.token).toBe("session");
+    expect(loadState({ home, env: env() }).device?.id).toBe("winner");
+  });
+
+  it("cleans up an approved login if account lookup fails", async () => {
+    const revoked: string[] = [];
+    const { api } = fakeApi({
+      account: async () => { throw new Error("account fixture failed"); },
+      signOut: async (token) => { revoked.push(token); },
+    });
+    await expect(login(context(api).ctx, { browser: false })).rejects.toThrow("account fixture failed");
+    expect(revoked).toEqual(["session"]);
+    expect(loadState({ home, env: env() }).session).toBeUndefined();
+  });
+});
+
+describe("credential revocation order", () => {
+  it("saves a replacement login before signing out its previous session", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    await login(ctx, { browser: false });
+    api.deviceToken = async () => ({ access_token: "replacement", expires_in: 1 });
+    const revoked: string[] = [];
+    api.signOut = async (token) => {
+      expect(loadState({ home, env: env() }).session?.token).toBe("replacement");
+      revoked.push(token);
+    };
+    await login(ctx, { browser: false });
+    expect(revoked).toEqual(["session"]);
+  });
+
+  it("saves logout before remote revocation, including when the server is unavailable", async () => {
+    const { api } = fakeApi();
+    const { ctx, output } = context(api);
+    await login(ctx, { browser: false });
+    const revoked: string[] = [];
+    api.signOut = async (token) => {
+      expect(loadState({ home, env: env() }).session).toBeUndefined();
+      revoked.push(token);
+      throw new ApiError(503, "offline fixture");
+    };
+    expect(await logout(ctx)).toBe(0);
+    expect(revoked).toEqual(["session"]);
+    expect(output()).toContain("Signed out on this machine");
+  });
+});

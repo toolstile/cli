@@ -1,3 +1,4 @@
+import { boundedText, deadline } from "./bounds.js";
 export const CLIENT_ID = "toolstile-cli";
 
 export class ApiError extends Error {
@@ -41,28 +42,37 @@ export interface DeviceCode {
 type Fetch = typeof fetch;
 
 async function request<T>(fetcher: Fetch, url: string, init: RequestInit = {}): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetcher(url, {
-      ...init,
-      // Never follow a redirect with a session token to another address.
-      redirect: "error",
-      headers: { "Content-Type": "application/json", Accept: "application/json", ...init.headers },
-    });
-  } catch {
+  return deadline(async (signal) => {
+    let response: Response;
+    try {
+      response = await fetcher(url, {
+        ...init,
+        signal,
+        // Never follow a redirect with a session token to another address.
+        redirect: "error",
+        headers: { "Content-Type": "application/json", Accept: "application/json", ...init.headers },
+      });
+    } catch {
+      throw new ApiError(0, `Could not reach ${new URL(url).origin}. Check your connection.`);
+    }
+    if (response.status === 204) return undefined as T;
+    const body = (await boundedText(response).then((text) => JSON.parse(text)).catch((error) => {
+      if (error instanceof SyntaxError) return null;
+      throw error;
+    })) as Record<string, unknown> | null;
+    if (!response.ok) {
+      const message = body?.error_description ?? body?.message;
+      throw new ApiError(
+        response.status,
+        typeof message === "string" ? message : `Request failed (${response.status})`,
+        typeof body?.error === "string" ? body.error : undefined,
+      );
+    }
+    return body as T;
+  }, 30_000, init.signal ?? undefined).catch((error) => {
+    if (error instanceof ApiError) throw error;
     throw new ApiError(0, `Could not reach ${new URL(url).origin}. Check your connection.`);
-  }
-  if (response.status === 204) return undefined as T;
-  const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!response.ok) {
-    const message = body?.error_description ?? body?.message;
-    throw new ApiError(
-      response.status,
-      typeof message === "string" ? message : `Request failed (${response.status})`,
-      typeof body?.error === "string" ? body.error : undefined,
-    );
-  }
-  return body as T;
+  });
 }
 
 /** The Toolstile endpoints the CLI uses. Session calls carry the device-flow session token. */
