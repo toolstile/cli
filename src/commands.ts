@@ -8,7 +8,7 @@ import { checklist } from "./prompt.js";
 import { runProxy } from "./proxy.js";
 import { type Style, tildify } from "./report.js";
 import { CLIENT_NAMES } from "./sources.js";
-import { type AgentLink, loadState, saveState, type State, type StateEnv } from "./state.js";
+import { type AgentLink, loadState, saveState, withCurrentState, type State, type StateEnv } from "./state.js";
 import type { ClientId } from "./types.js";
 
 export interface Context {
@@ -32,6 +32,16 @@ export class UserError extends Error {}
 const stateEnv = (ctx: Context): StateEnv => ({ home: ctx.home, env: ctx.env, platform: ctx.platform });
 const print = (ctx: Context, text = "") => ctx.stdout.write(`${text}\n`);
 const interactive = (ctx: Context) => ctx.stdin.isTTY === true && ctx.stdout.isTTY === true;
+
+/** A failed local save must not silently abandon a newly issued remote credential. */
+async function compensate(error: unknown, cleanup: () => Promise<void>, remedy: string): Promise<never> {
+  try { await cleanup(); }
+  catch (cleanupError) {
+    if (!(cleanupError instanceof ApiError && cleanupError.status === 404))
+      throw new UserError(`${error instanceof Error ? error.message : "Could not save credentials."} ${remedy}`);
+  }
+  throw error;
+}
 
 /** HTTPS, except a loopback server for local development. */
 export function normalizeServer(value: string): string {
@@ -119,25 +129,36 @@ export async function login(ctx: Context, options: { server?: string; browser: b
       throw error;
     }
   }
-  const account = await api.account(token);
   const previous = state.session;
-  // The old session is ended where it was issued, never sent to the new server.
-  if (previous) await ctx.api(previous.server ?? state.server).signOut(previous.token).catch(() => undefined);
-  if (server !== state.server || (previous && previous.email !== account.email)) {
-    // Another account's workspace and device do not apply; enabled agents keep their own access.
-    delete state.workspace;
-    delete state.device;
+  const previousServer = previous?.server ?? state.server;
+  let deviceLabel: string | undefined;
+  try {
+    const account = await api.account(token);
+    deviceLabel = account.device?.label;
+    if (server !== state.server || (previous && previous.email !== account.email)) {
+      // Another account's workspace and device do not apply; agents keep their own access.
+      delete state.workspace;
+      delete state.device;
+    }
+    state.server = server;
+    state.session = { token, email: account.email, expiresAt: account.expiresAt, server };
+    if (account.device) state.device = account.device;
+    saveState(state, stateEnv(ctx));
+  } catch (error) {
+    await compensate(error, async () => {
+      // Only discard this sign-in, never the session a concurrent command saved.
+      const winner = loadState(stateEnv(ctx)).session;
+      if (winner?.token !== token || winner.server !== server) await api.signOut(token);
+    }, "Sign-in cleanup failed. Remove this new CLI session in the Toolstile dashboard.");
   }
-  state.server = server;
-  state.session = { token, email: account.email, expiresAt: account.expiresAt, server };
-  // The device named on the approval page. Agents still on an older device move to it at
-  // the next `mcp setup`.
-  if (account.device) state.device = account.device;
-  saveState(state, stateEnv(ctx));
+  // End the previous session only after the replacement was safely saved.
+  if (previous && (previous.token !== token || previousServer !== server))
+    await ctx.api(previousServer).signOut(previous.token).catch(() => undefined);
+  const account = state.session!;
   print(ctx);
   print(
     ctx,
-    `Signed in as ${s.bold(account.email)}${account.device ? ` on ${s.bold(account.device.label)}` : ""}. Next: ${s.bold("toolstile mcp setup")}`,
+    `Signed in as ${s.bold(account.email)}${deviceLabel ? ` on ${s.bold(deviceLabel)}` : ""}. Next: ${s.bold("toolstile mcp setup")}`,
   );
   return 0;
 }
@@ -148,16 +169,17 @@ export async function logout(ctx: Context): Promise<number> {
     print(ctx, "Not signed in.");
     return 0;
   }
+  const session = state.session;
+  delete state.session;
+  saveState(state, stateEnv(ctx));
   let reached = true;
   await ctx
-    .api(state.session.server ?? state.server)
-    .signOut(state.session.token)
+    .api(session.server ?? state.server)
+    .signOut(session.token)
     .catch((error: unknown) => {
       // 401 means the session had already ended; anything else is worth saying.
       if (!(error instanceof ApiError && error.status === 401)) reached = false;
     });
-  delete state.session;
-  saveState(state, stateEnv(ctx));
   print(ctx, reached ? "Signed out." : "Signed out on this machine. Toolstile could not be reached, so the session ends when it expires.");
   const enabled = Object.keys(state.agents).length;
   if (enabled)
@@ -305,12 +327,12 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
     const want = wanted.has(target.client);
     const link = state.agents[target.client];
     if (want) {
+      let replacedAuthorization = false;
       if (live(target.client) && link && link.endpoint !== endpoint) {
         link.endpoint = endpoint;
         saveState(state, stateEnv(ctx));
       }
       if (!live(target.client)) {
-        if (link) await removeRemote(link).catch(() => undefined);
         const { id: deviceId } = await ensureDevice();
         const created = await api.addAgent(session.token, { workspaceId: workspace.id, deviceId, label: target.name });
         state.agents[target.client] = {
@@ -321,29 +343,48 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
           label: created.label,
           token: created.token,
         };
-        // Saved before touching the agent's config, so a token is never lost.
-        saveState(state, stateEnv(ctx));
+        // Commit before editing config or revoking any previous authorization.
+        try { saveState(state, stateEnv(ctx)); }
+        catch (error) {
+          await compensate(error, async () => {
+            const winner = loadState(stateEnv(ctx));
+            const retained = Object.values(winner.agents).some((agent) =>
+              agent?.id === created.id && agent.workspaceId === workspace.id && agent.server === state.server);
+            if (!retained) await api.removeAgent(session.token, workspace.id, created.id);
+          }, `Agent cleanup failed. Remove the new ${target.name} authorization (${created.id}) in the Toolstile dashboard.`);
+        }
+        replacedAuthorization = !!link;
       }
       try {
-        const result = writeEntry(target, proxyCommand(target.client, ctx.version, ctx.platform));
+        const result = withCurrentState(state, stateEnv(ctx), () => writeEntry(target, proxyCommand(target.client, ctx.version, ctx.platform)));
         if (!live(target.client) || result !== "unchanged") changes.push(`${s.bold("+")} ${target.name}  ${s.dim(tildify(target.path, ctx.home))}`);
         if (result === "replaced")
           replaced.push(target.name);
       } catch (error) {
         if (!(error instanceof ManualEditError)) throw error;
         manual.push({ target, error, enable: true });
+      } finally {
+        // Finish both local writes before yielding to remote cleanup. A later
+        // disable must not be followed by this operation recreating its config.
+        if (replacedAuthorization && link) await removeRemote(link).catch(() => undefined);
       }
     } else if (link || isProxyEntry(readEntry(target))) {
-      try {
-        writeEntry(target, null);
-      } catch (error) {
-        if (!(error instanceof ManualEditError)) throw error;
-        manual.push({ target, error, enable: false });
-      }
+      const removeLocal = () => {
+        try {
+          writeEntry(target, null);
+        } catch (error) {
+          if (!(error instanceof ManualEditError)) throw error;
+          manual.push({ target, error, enable: false });
+        }
+        if (link) delete state.agents[target.client];
+      };
+      // Both local writes form one transition, even across separate processes.
+      if (link) saveState(state, stateEnv(ctx), removeLocal);
+      else withCurrentState(state, stateEnv(ctx), removeLocal);
       if (link) {
-        await removeRemote(link);
-        delete state.agents[target.client];
-        saveState(state, stateEnv(ctx));
+        await removeRemote(link).catch(() => {
+          throw new UserError(`Disabled locally, but remote cleanup failed. Remove ${target.name} authorization (${link.id}) in the Toolstile dashboard.`);
+        });
       }
       changes.push(`${s.bold("-")} ${target.name}`);
     }

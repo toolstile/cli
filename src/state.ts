@@ -1,3 +1,5 @@
+import { fileText, withFileLock } from "./file-lock.js";
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -51,36 +53,57 @@ export const statePath = (opts?: StateEnv) => join(stateDir(opts), "credentials.
  * The saved server always wins over `TOOLSTILE_URL`, which only picks the server for a new
  * `auth login`: an environment variable set by a project must not redirect saved tokens.
  */
+const revisions = new WeakMap<State, string | null>();
+
 export function loadState(opts?: StateEnv): State {
   const fallback: State = { server: DEFAULT_SERVER, agents: {} };
   let text: string;
   try {
     text = readFileSync(statePath(opts), "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") { revisions.set(fallback, null); return fallback; }
     throw error;
   }
   try {
     const data = JSON.parse(text) as Partial<State>;
-    return moveLegacyServer({ ...fallback, ...data, agents: data.agents ?? {} });
+    const state = moveLegacyServer({ ...fallback, ...data, agents: data.agents ?? {} });
+    revisions.set(state, text);
+    return state;
   } catch {
     throw new Error(`${statePath(opts)} is not valid JSON. Delete it and run toolstile auth login again.`);
   }
 }
 
+/** Hold the credential revision stable during a synchronous config mutation. */
+export function withCurrentState<T>(state: State, opts: StateEnv | undefined, run: () => T): T {
+  return withFileLock(statePath(opts), () => {
+    if (!revisions.has(state) || revisions.get(state) !== fileText(statePath(opts)))
+      throw new Error("Toolstile credentials changed in another command. Run this command again.");
+    return run();
+  });
+}
+
 /** Written to a temporary file and renamed, so a crash never leaves half a file. */
-export function saveState(state: State, opts?: StateEnv): void {
+export function saveState(state: State, opts?: StateEnv, beforeWrite?: () => void): void {
   const dir = stateDir(opts);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = statePath(opts);
-  const temp = `${path}.${process.pid}.tmp`;
+  withFileLock(path, () => {
+  const before = fileText(path);
+  if (revisions.has(state) && revisions.get(state) !== before)
+    throw new Error("Toolstile credentials changed in another command. Run this command again.");
+  // Optional synchronous config/state transition shares this credential lock.
+  beforeWrite?.();
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);
     renameSync(temp, path);
+    revisions.set(state, fileText(path));
   } finally {
     rmSync(temp, { force: true });
   }
+  });
 }
 
 /** Sign-ins and agents saved for the old bare-domain address keep working on the new hosts. */

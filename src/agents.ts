@@ -1,3 +1,5 @@
+import { fileText, withFileLock } from "./file-lock.js";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -98,7 +100,19 @@ function readText(path: string): string | null {
 }
 
 /** Replaces the file in one step and keeps its permission bits; a symlink keeps pointing at it. */
-export function writeText(link: string, text: string) {
+export function writeText(link: string, text: string, expected?: string) {
+  return withFileLock(link, () => {
+    if (expected !== undefined && fileText(link) !== expected)
+      throw new Error("The config changed while it was being edited; run the command again.");
+    writeTextLocked(link, text);
+  });
+}
+
+export function updateText(link: string, update: (text: string | null) => string) {
+  return withFileLock(link, () => writeTextLocked(link, update(fileText(link))));
+}
+
+function writeTextLocked(link: string, text: string) {
   let path = link;
   let mode = 0o600;
   try {
@@ -107,7 +121,7 @@ export function writeText(link: string, text: string) {
   } catch {
     mkdirSync(dirname(path), { recursive: true });
   }
-  const temp = `${path}.toolstile-${process.pid}.tmp`;
+  const temp = `${path}.toolstile-${process.pid}-${randomUUID()}.tmp`;
   try {
     writeFileSync(temp, text, { mode });
     chmodSync(temp, mode);
@@ -183,6 +197,10 @@ const outcome = (command: unknown, existing: unknown): WriteResult =>
   !command ? "removed" : existing === undefined ? "added" : isProxyEntry(existing) ? "updated" : "replaced";
 
 export function writeEntry(target: Target, command: { command: string; args: string[] } | null): WriteResult {
+  return withFileLock(target.path, () => writeEntryLocked(target, command));
+}
+
+function writeEntryLocked(target: Target, command: { command: string; args: string[] } | null): WriteResult {
   const text = readText(target.path) ?? "";
   if (target.format === "codex") {
     let current: Record<string, unknown> | undefined;
@@ -204,7 +222,8 @@ export function writeEntry(target: Target, command: { command: string; args: str
     if (command ? !isProxyEntry(parsed) : parsed !== undefined)
       throw new ManualEditError(target, "its toolstile server is written in a form setup cannot edit", command ? tomlEntry(command) : "");
     if (next === text) return "unchanged";
-    writeText(target.path, next);
+    if ((readText(target.path) ?? "") !== text) throw new Error("The agent config changed; run setup again.");
+    writeTextLocked(target.path, next);
     return outcome(command, existing);
   }
 
@@ -234,6 +253,7 @@ export function writeEntry(target: Target, command: { command: string; args: str
   else delete servers[ENTRY];
   object[key] = servers;
   const indent = text.match(/\n([ \t]+)"/)?.[1] ?? "  ";
-  writeText(target.path, `${JSON.stringify(object, null, indent)}\n`);
+  if ((readText(target.path) ?? "") !== text) throw new Error("The agent config changed; run setup again.");
+  writeTextLocked(target.path, `${JSON.stringify(object, null, indent)}\n`);
   return outcome(entry, existing);
 }
