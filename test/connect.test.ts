@@ -13,9 +13,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ManualEditError, proxyCommand, readEntry, targets, writeEntry } from "../src/agents.js";
+import { ManualEditError, proxyCommand, readEntry, targets, withoutTomlTable, writeEntry } from "../src/agents.js";
 import { type Api, ApiError } from "../src/api.js";
-import { type Context, login, logout, normalizeServer, setup } from "../src/commands.js";
+import {
+  browserCommand,
+  type Context,
+  gatewayUrl,
+  login,
+  logout,
+  normalizeServer,
+  setup,
+  signInUrl,
+} from "../src/commands.js";
 import { audit } from "../src/index.js";
 import { runProxy } from "../src/proxy.js";
 import { style } from "../src/report.js";
@@ -174,6 +183,173 @@ describe("credentials file", () => {
   });
 });
 
+describe("server-supplied URLs", () => {
+  const server = "https://app.toolstile.com";
+
+  it("accepts a sign-in link only on the server's own origin", () => {
+    expect(signInUrl("https://app.toolstile.com/device?user_code=AB", server)?.href).toBe(
+      "https://app.toolstile.com/device?user_code=AB",
+    );
+    expect(signInUrl("http://localhost:4311/device", "http://localhost:4311")?.href).toBe("http://localhost:4311/device");
+    for (const hostile of [
+      "file:///etc/passwd",
+      "file://app.toolstile.com/device",
+      "javascript:alert(1)",
+      "ms-settings:privacy",
+      "toolstile://device",
+      "http://app.toolstile.com/device",
+      "https://evil.test/device",
+      "https://app.toolstile.com.evil.test/device",
+      "https://app.toolstile.com:8443/device",
+      "https://user:pass@app.toolstile.com/device",
+      "https://app.toolstile.com.:443/device",
+      "https://xn--pp-8ka.toolstile.com/device",
+      "http://127.0.0.1.evil.test/device",
+      "http://localhost./device",
+      "http://[::ffff:127.0.0.1]/device",
+      "https://app.toolstile.com\u0000.evil.test/device",
+      "not a url",
+      "",
+    ])
+      expect(signInUrl(hostile, server), hostile).toBeUndefined();
+    expect(signInUrl("https://app.toolstile.com:443/device", server)?.href).toBe("https://app.toolstile.com/device");
+    // A backslash parses as a path separator, so the serialized link stays on the server's origin.
+    expect(signInUrl("https://app.toolstile.com\\@evil.test/device", server)?.href).toBe(
+      "https://app.toolstile.com/@evil.test/device",
+    );
+    expect(signInUrl(undefined, server)).toBeUndefined();
+    expect(signInUrl(42, server)).toBeUndefined();
+  });
+
+  it("keeps shell metacharacters inside one browser argument on every platform", () => {
+    const url = signInUrl("https://app.toolstile.com/device?a=1&calc.exe|whoami;$(id)`id`", server)!.href;
+    expect(url.startsWith("https://app.toolstile.com/device?")).toBe(true);
+    expect(browserCommand("win32", url)).toEqual(["rundll32", ["url.dll,FileProtocolHandler", url]]);
+    expect(browserCommand("darwin", url)).toEqual(["open", [url]]);
+    expect(browserCommand("linux", url)).toEqual(["xdg-open", [url]]);
+    for (const platform of ["win32", "darwin", "linux"] as const) {
+      const [command, args] = browserCommand(platform, url);
+      expect(command).not.toMatch(/^(cmd|powershell|pwsh|sh|bash)(\.exe)?$/i);
+      expect(args.at(-1)).toBe(url);
+    }
+  });
+
+  it("does not show or open a link for another origin", async () => {
+    const { api } = fakeApi({
+      deviceCode: async () => ({
+        device_code: "dc",
+        user_code: "ABCDEFGH",
+        verification_uri: "https://evil.test/device",
+        verification_uri_complete: "https://evil.test/device?x=1&calc",
+        expires_in: 600,
+        interval: 5,
+      }),
+    });
+    const { ctx, output } = context(api);
+    const opened: string[] = [];
+    ctx.openBrowser = (url) => opened.push(url);
+    await expect(login(ctx, { browser: true })).rejects.toThrow(/different address/);
+    await expect(login(ctx, { browser: true })).rejects.not.toThrow(/evil/);
+    expect(output()).not.toContain("evil");
+    expect(opened).toEqual([]);
+  });
+
+  it("falls back to the code page when only the prefilled link is unsafe", async () => {
+    const { api } = fakeApi({
+      deviceCode: async () => ({
+        device_code: "dc",
+        user_code: "ABCDEFGH",
+        verification_uri: "https://app.toolstile.com/device",
+        verification_uri_complete: "file:///C:/Windows/System32/calc.exe",
+        expires_in: 600,
+        interval: 5,
+      }),
+    });
+    const { ctx, output } = context(api);
+    const opened: string[] = [];
+    ctx.openBrowser = (url) => opened.push(url);
+    expect(await login(ctx, { browser: true })).toBe(0);
+    expect(opened).toEqual([]);
+    expect(output()).not.toContain("file:");
+    expect(output()).toContain("https://app.toolstile.com/device");
+    expect(output()).toContain("ABCD-EFGH");
+  });
+
+  it("opens a valid link with the machine name", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    const opened: string[] = [];
+    ctx.openBrowser = (url) => opened.push(url);
+    await login(ctx, { browser: true });
+    expect(opened).toEqual(["https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac"]);
+  });
+
+  it("accepts a gateway URL only over HTTPS or loopback HTTP, without credentials", () => {
+    expect(gatewayUrl("https://mcp.toolstile.com/mcp")).toBe("https://mcp.toolstile.com/mcp");
+    expect(gatewayUrl("http://127.0.0.1:4311/mcp")).toBe("http://127.0.0.1:4311/mcp");
+    expect(gatewayUrl("http://[::1]:4311/mcp")).toBe("http://[::1]:4311/mcp");
+    for (const bad of [
+      "http://mcp.toolstile.com/mcp",
+      "https://user:pass@mcp.toolstile.com/mcp",
+      "https://mcp.toolstile.com/mcp?token=x",
+      "https://mcp.toolstile.com/mcp#x",
+      "file:///mcp",
+      "ws://localhost/mcp",
+      "not a url",
+    ])
+      expect(gatewayUrl(bad), bad).toBeUndefined();
+    expect(gatewayUrl(undefined)).toBeUndefined();
+    expect(gatewayUrl({ href: "https://mcp.toolstile.com/mcp" })).toBeUndefined();
+  });
+});
+
+describe("withoutTomlTable", () => {
+  const config = [
+    "# my settings",
+    'model = "o3"',
+    "",
+    "[mcp_servers.github]",
+    'command = "gh"',
+    "",
+    "[mcp_servers.toolstile]",
+    'command = "npx"',
+    "",
+    "[mcp_servers.toolstile.env]",
+    'A = "1"',
+    "",
+    '[ "mcp_servers" . "toolstile" . tools ] # quoted header',
+    "x = 1",
+    "",
+    "[mcp_servers.toolstile-other]",
+    'command = "keep"',
+    "",
+  ].join("\n");
+
+  it("drops the table and its sub-tables, keeping everything else", () => {
+    const out = withoutTomlTable(config);
+    expect(out).toContain("# my settings");
+    expect(out).toContain("[mcp_servers.github]");
+    expect(out).toContain("[mcp_servers.toolstile-other]");
+    expect(out).not.toMatch(/^\[mcp_servers\.toolstile\]/m);
+    expect(out).not.toContain("toolstile.env");
+    expect(out).not.toContain("quoted header");
+    expect(out).not.toContain('command = "npx"');
+  });
+
+  it("puts a replacement where the table was, or at the end", () => {
+    const replacement = '[mcp_servers.toolstile]\ncommand = "new"\n';
+    const out = withoutTomlTable(config, "toolstile", replacement);
+    expect(out.indexOf('command = "new"')).toBeLessThan(out.indexOf("[mcp_servers.toolstile-other]"));
+    expect(out.match(/command = "new"/g)).toHaveLength(1);
+    expect(withoutTomlTable('model = "o3"\n', "toolstile", replacement)).toBe('model = "o3"\n\n[mcp_servers.toolstile]\ncommand = "new"\n');
+    expect(withoutTomlTable("", "toolstile", replacement)).toBe('[mcp_servers.toolstile]\ncommand = "new"\n');
+  });
+
+  it("removes another named server", () => {
+    expect(withoutTomlTable(config, "github")).not.toContain('command = "gh"');
+  });
+});
+
 function fakeApi(overrides: Partial<Api> = {}) {
   const calls: string[] = [];
   let next = 0;
@@ -182,8 +358,8 @@ function fakeApi(overrides: Partial<Api> = {}) {
     deviceCode: async () => ({
       device_code: "dc",
       user_code: "ABCDEFGH",
-      verification_uri: "https://t.test/device",
-      verification_uri_complete: "https://t.test/device?user_code=ABCDEFGH",
+      verification_uri: "https://app.toolstile.com/device",
+      verification_uri_complete: "https://app.toolstile.com/device?user_code=ABCDEFGH",
       expires_in: 600,
       interval: 5,
     }),
@@ -253,7 +429,7 @@ describe("auth and setup", () => {
     const { ctx, output } = context(api);
     expect(await login(ctx, { browser: false })).toBe(0);
     // The link fills in the code and this machine's name on the approval page.
-    expect(output()).toContain("https://t.test/device?user_code=ABCDEFGH&device_name=build-mac");
+    expect(output()).toContain("https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac");
     expect(output()).toContain("ABCD-EFGH");
     expect(output()).toContain("ABCD-EFGH");
     expect(loadState({ home, env: env() }).session).toMatchObject({ token: "session", email: "me@test.invalid" });
@@ -318,7 +494,13 @@ describe("auth and setup", () => {
     const { ctx } = context(api);
     ctx.api = (server) => {
       servers.push(server);
-      return api;
+      // Each server links to its own approval page.
+      const deviceCode = async () => ({
+        ...(await api.deviceCode()),
+        verification_uri: `${server}/device`,
+        verification_uri_complete: `${server}/device?user_code=ABCDEFGH`,
+      });
+      return { ...api, deviceCode };
     };
     await login(ctx, { browser: false });
     await setup(ctx, { enable: "cursor" });

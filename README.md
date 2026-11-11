@@ -13,7 +13,7 @@ Windsurf, Gemini CLI and Cline and grades them for:
 | --- | --- |
 | API keys, tokens and passwords written into config files, URLs or arguments | high |
 | Remote servers reached over plain `http://` | high |
-| Containers run with `--privileged` or the Docker socket | high |
+| Containers run with `--privileged`, the Docker socket or host networking (`--net=host`) | high |
 | The same credential pasted into several clients' configs | medium |
 | Config files holding secrets that other accounts can reach (file and folder permissions) | medium |
 | `npx`, `uvx` and `docker` servers that run whatever version is newest | medium |
@@ -84,8 +84,8 @@ them once your agents work. After moving secrets, open a new terminal and restar
 your agents so they start with the variables, and rotate any secret that sat in a
 shared or synced file.
 
-`--dry-run` only shows the changes; `--yes` applies the ones that start selected
-without asking.
+`--dry-run` only shows the changes; `--yes` (or `-y`) applies the ones that start
+selected without asking.
 
 ## The audit only reads
 
@@ -99,7 +99,7 @@ without asking.
   for example `mcpServers.github.env.GITHUB_TOKEN`, and the kind of secret.
 - Never quotes a config file: one that cannot be read or parsed is listed with a
   reason and position only, for example `invalid TOML at line 3, column 12`.
-- About 3,500 lines of TypeScript with two runtime dependencies
+- Plain TypeScript with two runtime dependencies
   ([smol-toml](https://github.com/squirrelchat/smol-toml), for Codex's TOML
   config, and [jsonc-parser](https://github.com/microsoft/node-jsonc-parser), so
   `--fix` keeps comments and layout in JSON files) and an optional one ([resvg-js](https://github.com/thx/resvg-js), only
@@ -109,7 +109,7 @@ without asking.
 
 ```text
 --fix               Suggest fixes and apply the ones you select
---yes               With --fix: apply the fixes that start selected, without asking
+-y, --yes           With --fix: apply the fixes that start selected, without asking
 --dry-run           With --fix: only show the changes
 --json              Print results as JSON
 --card [file]       Write a shareable grade card (default toolstile-audit.png;
@@ -204,6 +204,11 @@ lives only in the CLI's credentials file (`~/.config/toolstile/credentials.json`
 readable by you alone; `%APPDATA%\toolstile` on Windows). No token is written
 into the agent's config, so `toolstile audit` has nothing to flag. JSON configs
 with comments are not rewritten; setup prints the entry to add yourself.
+
+The CLI keeps the credentials file, `--fix`'s `secrets.env` and its backups in one
+folder: `$TOOLSTILE_CONFIG_DIR` when set, otherwise `%APPDATA%\toolstile` on
+Windows and `$XDG_CONFIG_HOME/toolstile` (default `~/.config/toolstile`)
+elsewhere.
 
 `npx toolstile auth logout` ends the CLI's sign-in. Agents you enabled keep
 working until you turn them off with `mcp setup` or delete the device in the

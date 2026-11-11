@@ -43,6 +43,11 @@ async function compensate(error: unknown, cleanup: () => Promise<void>, remedy: 
   throw error;
 }
 
+const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/;
+
+/** HTTPS, or HTTP to a loopback host for local development. */
+const secureScheme = (url: URL) => url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.test(url.hostname));
+
 /** HTTPS, except a loopback server for local development. */
 export function normalizeServer(value: string): string {
   let url: URL;
@@ -51,9 +56,7 @@ export function normalizeServer(value: string): string {
   } catch {
     throw new UserError(`--server must be a URL, for example https://app.toolstile.com`);
   }
-  const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(url.hostname);
-  if (url.protocol !== "https:" && !(loopback && url.protocol === "http:"))
-    throw new UserError("--server must use https://");
+  if (!secureScheme(url)) throw new UserError("--server must use https://");
   return url.origin;
 }
 
@@ -66,10 +69,35 @@ export function gatewayUrl(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
-  const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(url.hostname);
   if (url.username || url.password || url.search || url.hash) return undefined;
-  if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) return undefined;
+  if (!secureScheme(url)) return undefined;
   return url.href;
+}
+
+/**
+ * A sign-in page link the server sent, if it is safe to show and open: a URL on the server's
+ * own origin (so HTTPS, or HTTP for a loopback server) with no credentials, else undefined.
+ */
+export function signInUrl(value: unknown, server: string): URL | undefined {
+  if (typeof value !== "string") return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (!secureScheme(url) || url.username || url.password || url.origin !== server) return undefined;
+  return url;
+}
+
+/**
+ * The program and arguments that open `url` in the default browser. Never a shell string:
+ * Windows uses rundll32 rather than `cmd /c start`, where `&` in a URL would end the command.
+ */
+export function browserCommand(platform: NodeJS.Platform, url: string): [string, string[]] {
+  if (platform === "darwin") return ["open", [url]];
+  if (platform === "win32") return ["rundll32", ["url.dll,FileProtocolHandler", url]];
+  return ["xdg-open", [url]];
 }
 
 function defaultOpenBrowser(ctx: Context) {
@@ -77,10 +105,9 @@ function defaultOpenBrowser(ctx: Context) {
     // Over SSH or without a display the URL and code are enough; nothing to open.
     if (ctx.env.SSH_CONNECTION || ctx.env.SSH_TTY) return;
     if (ctx.platform === "linux" && !ctx.env.DISPLAY && !ctx.env.WAYLAND_DISPLAY) return;
-    const [command, args] =
-      ctx.platform === "darwin" ? ["open", [url]] : ctx.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+    const [command, args] = browserCommand(ctx.platform, url);
     try {
-      spawn(command as string, args as string[], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+      spawn(command, args, { stdio: "ignore", detached: true, shell: false }).on("error", () => {}).unref();
     } catch {}
   };
 }
@@ -98,15 +125,27 @@ export async function login(ctx: Context, options: { server?: string; browser: b
   const code = await api.deviceCode();
   // The page fills in the code and this machine's name; the name can be edited there and
   // becomes the device this machine's agents are listed under.
-  const link = new URL(code.verification_uri_complete);
-  link.searchParams.set("device_name", machineName(ctx));
-  print(ctx, `Open this link on any device with a browser and approve the sign-in:`);
-  print(ctx);
-  print(ctx, `  ${s.bold(link.href)}`);
-  print(ctx);
-  print(ctx, `Check that the page shows this code: ${s.bold(formatCode(code.user_code))}`);
+  const link = signInUrl(code.verification_uri_complete, server);
+  if (link) {
+    link.searchParams.set("device_name", machineName(ctx));
+    print(ctx, `Open this link on any device with a browser and approve the sign-in:`);
+    print(ctx);
+    print(ctx, `  ${s.bold(link.href)}`);
+    print(ctx);
+    print(ctx, `Check that the page shows this code: ${s.bold(formatCode(code.user_code))}`);
+  } else {
+    // Never show or open a link that points anywhere but the server being signed in to.
+    const page = signInUrl(code.verification_uri, server);
+    if (!page) throw new UserError(`${server} sent a sign-in link for a different address. Check --server and TOOLSTILE_URL.`);
+    ctx.stderr.write(`The sign-in link from ${server} was not valid, so no browser was opened.\n`);
+    print(ctx, `Open this page on any device with a browser, enter the code and approve the sign-in:`);
+    print(ctx);
+    print(ctx, `  ${s.bold(page.href)}`);
+    print(ctx);
+    print(ctx, `Code: ${s.bold(formatCode(code.user_code))}`);
+  }
   print(ctx, s.dim(`Waiting for approval. The code expires in ${Math.round(code.expires_in / 60)} minutes.`));
-  if (options.browser) (ctx.openBrowser ?? defaultOpenBrowser(ctx))(link.href);
+  if (link && options.browser) (ctx.openBrowser ?? defaultOpenBrowser(ctx))(link.href);
 
   const sleep = ctx.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   let interval = Math.max(code.interval, 1) * 1000;
