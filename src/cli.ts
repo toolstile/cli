@@ -50,7 +50,7 @@ safely are listed with what to do by hand.
 
 Options
   --fix               Suggest fixes and apply the ones you select
-  --yes               With --fix: apply the fixes that start selected, without asking
+  -y, --yes           With --fix: apply the fixes that start selected, without asking
   --dry-run           With --fix: only show the changes
   --json              Print results as JSON
   --card [file]       Write a shareable grade card (default toolstile-audit.png;

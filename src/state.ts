@@ -49,12 +49,12 @@ export function stateDir({ home = homedir(), env = process.env, platform = proce
 
 export const statePath = (opts?: StateEnv) => join(stateDir(opts), "credentials.json");
 
+const revisions = new WeakMap<State, string | null>();
+
 /**
  * The saved server always wins over `TOOLSTILE_URL`, which only picks the server for a new
  * `auth login`: an environment variable set by a project must not redirect saved tokens.
  */
-const revisions = new WeakMap<State, string | null>();
-
 export function loadState(opts?: StateEnv): State {
   const fallback: State = { server: DEFAULT_SERVER, agents: {} };
   let text: string;
@@ -89,20 +89,20 @@ export function saveState(state: State, opts?: StateEnv, beforeWrite?: () => voi
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = statePath(opts);
   withFileLock(path, () => {
-  const before = fileText(path);
-  if (revisions.has(state) && revisions.get(state) !== before)
-    throw new Error("Toolstile credentials changed in another command. Run this command again.");
-  // Optional synchronous config/state transition shares this credential lock.
-  beforeWrite?.();
-  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-    chmodSync(temp, 0o600);
-    renameSync(temp, path);
-    revisions.set(state, fileText(path));
-  } finally {
-    rmSync(temp, { force: true });
-  }
+    const before = fileText(path);
+    if (revisions.has(state) && revisions.get(state) !== before)
+      throw new Error("Toolstile credentials changed in another command. Run this command again.");
+    // Optional synchronous config/state transition shares this credential lock.
+    beforeWrite?.();
+    const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(temp, 0o600);
+      renameSync(temp, path);
+      revisions.set(state, fileText(path));
+    } finally {
+      rmSync(temp, { force: true });
+    }
   });
 }
 
