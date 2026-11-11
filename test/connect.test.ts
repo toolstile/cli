@@ -202,10 +202,21 @@ describe("server-supplied URLs", () => {
       "https://app.toolstile.com.evil.test/device",
       "https://app.toolstile.com:8443/device",
       "https://user:pass@app.toolstile.com/device",
+      "https://app.toolstile.com.:443/device",
+      "https://xn--pp-8ka.toolstile.com/device",
+      "http://127.0.0.1.evil.test/device",
+      "http://localhost./device",
+      "http://[::ffff:127.0.0.1]/device",
+      "https://app.toolstile.com\u0000.evil.test/device",
       "not a url",
       "",
     ])
       expect(signInUrl(hostile, server), hostile).toBeUndefined();
+    expect(signInUrl("https://app.toolstile.com:443/device", server)?.href).toBe("https://app.toolstile.com/device");
+    // A backslash parses as a path separator, so the serialized link stays on the server's origin.
+    expect(signInUrl("https://app.toolstile.com\\@evil.test/device", server)?.href).toBe(
+      "https://app.toolstile.com/@evil.test/device",
+    );
     expect(signInUrl(undefined, server)).toBeUndefined();
     expect(signInUrl(42, server)).toBeUndefined();
   });
