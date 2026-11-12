@@ -7,7 +7,7 @@ npx toolstile audit
 ```
 
 It reads the configs of Claude Code, Claude Desktop, Cursor, Codex, VS Code,
-Windsurf, Gemini CLI and Cline and grades them for:
+Windsurf, Devin Desktop, Gemini CLI and Cline and grades them for:
 
 | Check | Severity |
 | --- | --- |
@@ -73,7 +73,7 @@ you pick which to apply (space toggles, enter applies):
 | Rule that approves a whole server, or `enableAllProjectMcpServers` | Removes it. These start unselected, since the agent then asks before each tool. |
 
 Everything else (secrets in arguments or URLs, Claude Desktop and Cline, which
-cannot read variables, Windows, `http://` servers, Docker images, broad
+cannot read variables, Devin Desktop, Windows, `http://` servers, Docker images, broad
 filesystem roots and auto-approve lists) is listed with what to change by hand.
 
 Each edited file is checked before it is written: it must parse to exactly the
@@ -160,6 +160,7 @@ values) and prints a ready-to-post link. To post the text report instead, add
 | Codex | `$CODEX_HOME/config.toml` (default `~/.codex`) | `.codex/config.toml` |
 | VS Code | user `settings.json` and `mcp.json` | `.vscode/mcp.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | |
+| Devin Desktop | `~/.config/devin/mcp_config.json` | `.devin/mcp_config.json` |
 | Gemini CLI | `~/.gemini/settings.json` | `.gemini/settings.json` |
 | Cline | `cline_mcp_settings.json` in VS Code or Cursor storage | |
 
@@ -182,7 +183,7 @@ reach the machine you are signing in, so it works over SSH, in containers and on
 servers without a browser.
 
 `mcp setup` lists the agents it finds (Claude Code, Claude Desktop, Cursor,
-Codex, VS Code, Windsurf, Gemini CLI, Cline) and lets you turn each one on or
+Codex, VS Code, Windsurf, Devin Desktop, Gemini CLI, Cline) and lets you turn each one on or
 off. Run it again any time to change the selection. Each enabled agent appears
 under this machine in the Toolstile dashboard with its own access, so you can
 grant, limit or revoke it there; then choose which MCP servers it can use.

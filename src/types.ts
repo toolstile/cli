@@ -8,6 +8,7 @@ export type ClientId =
   | "codex"
   | "vscode"
   | "windsurf"
+  | "devin"
   | "gemini"
   | "cline";
 

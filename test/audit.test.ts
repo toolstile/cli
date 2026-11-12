@@ -132,6 +132,16 @@ describe("audit", () => {
     ]);
   });
 
+  it("reads Devin Desktop's user and project configs", () => {
+    put(join(home, ".config", "devin", "mcp_config.json"), {
+      mcpServers: { remote: { url: "http://mcp.example.com/mcp", transport: "http" } },
+    });
+    const r = run();
+    expect(r.findings.filter((f) => f.rule === "insecure-transport").map((f) => f.title)).toEqual([
+      "Unencrypted remote server: remote (Devin Desktop)",
+    ]);
+  });
+
   it("flags filesystem servers rooted at the home folder or disk", () => {
     put(join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), {
       mcpServers: {

@@ -52,6 +52,8 @@ export function targets(opts: TargetEnv): Target[] {
     ["codex", join(codexHome, "config.toml"), "codex", codexHome],
     ["vscode", join(code, "mcp.json"), "vscode", code],
     ["windsurf", join(home, ".codeium", "windsurf", "mcp_config.json"), "mcpServers", join(home, ".codeium", "windsurf")],
+    // Devin Desktop, which replaced the Windsurf editor, reads its own user config.
+    ["devin", join(home, ".config", "devin", "mcp_config.json"), "mcpServers", join(home, ".config", "devin")],
     ["gemini", join(home, ".gemini", "settings.json"), "mcpServers", join(home, ".gemini")],
     ["cline", join(cline, "settings", "cline_mcp_settings.json"), "mcpServers", cline],
   ];

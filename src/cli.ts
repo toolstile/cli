@@ -30,7 +30,7 @@ Usage
   npx toolstile audit [options]
 
 Checks Claude Code, Claude Desktop, Cursor, Codex, VS Code, Windsurf,
-Gemini CLI and Cline configs for plaintext secrets, credentials copied
+Devin Desktop, Gemini CLI and Cline configs for plaintext secrets, credentials copied
 between clients, unpinned packages, auto-approved tools, broad
 filesystem access and unencrypted remote servers.
 
@@ -94,7 +94,7 @@ Options for setup
   --workspace <slug>    Workspace the agents use (default: the last one, or personal)
   --device-name <name>  Name for this machine (default: its hostname)
 
-Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, gemini, cline
+Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, devin, gemini, cline
 `;
 
 function version(): string {

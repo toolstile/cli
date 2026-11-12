@@ -46,6 +46,18 @@ beforeEach(() => {
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 describe("agent config entries", () => {
+  it("writes Devin Desktop's own user config, separate from legacy Windsurf", () => {
+    const devin = target("devin");
+    expect(devin.path).toBe(join(home, ".config", "devin", "mcp_config.json"));
+    expect(devin.name).toBe("Devin Desktop");
+    expect(devin.detected).toBe(false);
+    mkdirSync(join(home, ".config", "devin"), { recursive: true });
+    expect(target("devin").detected).toBe(true);
+    expect(target("windsurf").detected).toBe(false);
+    expect(writeEntry(target("devin"), command("devin"))).toBe("added");
+    expect(JSON.parse(readFileSync(devin.path, "utf8")).mcpServers.toolstile).toEqual(command("devin"));
+  });
+
   it("adds, keeps and removes the entry in a JSON config without touching other keys", () => {
     const t = target("claude-code");
     put(t.path, JSON.stringify({ numStartups: 2, mcpServers: { github: { command: "gh" } } }, null, 2));
