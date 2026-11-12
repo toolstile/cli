@@ -136,7 +136,7 @@ export function renderReport(r: AuditResult, home: string, s: Style, redacted = 
   if (r.files.length === 0 && r.unreadable.length === 0) {
     lines.push(
       "No MCP client configs found.",
-      s.dim("Looked for Claude Code, Claude Desktop, Cursor, Codex, VS Code, Windsurf, Gemini CLI and Cline."),
+      s.dim("Looked for Claude Code, Claude Desktop, Cursor, Codex, VS Code, Windsurf, Devin Desktop, Gemini CLI and Cline."),
       "",
     );
     return lines.join("\n");

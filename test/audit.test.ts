@@ -132,6 +132,33 @@ describe("audit", () => {
     ]);
   });
 
+  it("reads Devin Desktop's user, project and local override configs", () => {
+    put(join(home, ".config", "devin", "mcp_config.json"), {
+      mcpServers: { remote: { url: "http://mcp.example.com/mcp", transport: "http" } },
+    });
+    put(join(project, ".devin", "mcp_config.json"), {
+      mcpServers: { shared: { url: "http://shared.example.com/mcp" } },
+    });
+    put(join(project, ".devin", "mcp_config.local.json"), {
+      mcpServers: { mine: { command: "node", args: ["server.js"], env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB" } } },
+    });
+    const r = run();
+    expect(r.findings.filter((f) => f.rule === "insecure-transport").map((f) => f.title)).toEqual([
+      "Unencrypted remote server: remote (Devin Desktop)",
+      "Unencrypted remote server: shared (Devin Desktop)",
+    ]);
+    expect(r.findings.some((f) => f.rule === "plaintext-secret" && f.title.includes("Devin Desktop"))).toBe(true);
+  });
+
+  it("reads Devin Desktop's config from APPDATA on Windows", () => {
+    const appdata = join(home, "Roaming");
+    put(join(appdata, "devin", "mcp_config.json"), { mcpServers: { remote: { url: "http://mcp.example.com/mcp" } } });
+    const r = audit({ home, cwd: null, platform: "win32", env: { APPDATA: appdata } });
+    expect(r.findings.filter((f) => f.rule === "insecure-transport").map((f) => f.title)).toEqual([
+      "Unencrypted remote server: remote (Devin Desktop)",
+    ]);
+  });
+
   it("flags filesystem servers rooted at the home folder or disk", () => {
     put(join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), {
       mcpServers: {

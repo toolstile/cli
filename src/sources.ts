@@ -26,9 +26,16 @@ export const CLIENT_NAMES: Record<ClientId, string> = {
   codex: "Codex",
   vscode: "VS Code",
   windsurf: "Windsurf",
+  devin: "Devin Desktop",
   gemini: "Gemini CLI",
   cline: "Cline",
 };
+
+/** Devin Desktop's user config folder: `%APPDATA%\\devin` on Windows, `~/.config/devin` elsewhere. */
+export function devinDir({ home, platform, env }: Omit<ScanOptions, "cwd">): string {
+  if (platform === "win32") return join(env.APPDATA ?? join(home, "AppData", "Roaming"), "devin");
+  return join(home, ".config", "devin");
+}
 
 export function appData({ home, platform, env }: Omit<ScanOptions, "cwd">): string {
   if (platform === "darwin") return join(home, "Library", "Application Support");
@@ -49,6 +56,7 @@ function candidates(opts: ScanOptions): Candidate[] {
     { client: "cursor", path: join(home, ".cursor", "mcp.json"), kind: "mcp" },
     { client: "codex", path: join(codexHome, "config.toml"), kind: "codex" },
     { client: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), kind: "mcp" },
+    { client: "devin", path: join(devinDir(opts), "mcp_config.json"), kind: "mcp" },
     { client: "gemini", path: join(home, ".gemini", "settings.json"), kind: "mcp" },
   ];
   for (const edition of ["Code", "Code - Insiders"]) {
@@ -70,6 +78,8 @@ function candidates(opts: ScanOptions): Candidate[] {
       { client: "vscode", path: join(dir, ".vscode", "mcp.json"), kind: "vscode-mcp" },
       { client: "gemini", path: join(dir, ".gemini", "settings.json"), kind: "mcp" },
       { client: "codex", path: join(dir, ".codex", "config.toml"), kind: "codex" },
+      { client: "devin", path: join(dir, ".devin", "mcp_config.json"), kind: "mcp" },
+      { client: "devin", path: join(dir, ".devin", "mcp_config.local.json"), kind: "mcp" },
     );
   }
 

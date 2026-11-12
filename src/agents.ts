@@ -14,7 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parseJsonc } from "./parse.js";
-import { appData, CLIENT_NAMES } from "./sources.js";
+import { appData, CLIENT_NAMES, devinDir } from "./sources.js";
 import type { ClientId } from "./types.js";
 
 /** The server name `toolstile mcp setup` adds to each agent's config. */
@@ -52,6 +52,8 @@ export function targets(opts: TargetEnv): Target[] {
     ["codex", join(codexHome, "config.toml"), "codex", codexHome],
     ["vscode", join(code, "mcp.json"), "vscode", code],
     ["windsurf", join(home, ".codeium", "windsurf", "mcp_config.json"), "mcpServers", join(home, ".codeium", "windsurf")],
+    // Devin Desktop, which replaced the Windsurf editor, reads its own user config.
+    ["devin", join(devinDir(opts), "mcp_config.json"), "mcpServers", devinDir(opts)],
     ["gemini", join(home, ".gemini", "settings.json"), "mcpServers", join(home, ".gemini")],
     ["cline", join(cline, "settings", "cline_mcp_settings.json"), "mcpServers", cline],
   ];

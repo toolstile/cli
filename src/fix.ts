@@ -227,7 +227,10 @@ function moveSecret(sec: Secret, names: Names): SecretMove | string {
   }
 
   const ref = REFERENCE[s.client];
-  if (!ref) return `${CLIENT_NAMES[s.client]} does not read environment variables in its config`;
+  if (!ref)
+    return s.client === "devin"
+      ? "--fix does not move Devin Desktop secrets yet; replace the value with an ${env:NAME} reference by hand"
+      : `${CLIENT_NAMES[s.client]} does not read environment variables in its config`;
   if (where === "env" && key) {
     const name = names.pick([key, `${server}_${key}`], sec.value);
     if (!name) return "no free variable name";
