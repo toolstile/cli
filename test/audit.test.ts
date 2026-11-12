@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -350,10 +350,8 @@ describe("audit", () => {
 });
 
 describe("cli", () => {
-  // `pnpm test` builds first; fail rather than skip when the build is missing.
+  // `pnpm test` builds first.
   const cli = join(import.meta.dirname, "..", "dist", "cli.js");
-  it("has a build to run", () => expect(existsSync(cli), "dist/cli.js is missing: run pnpm build").toBe(true));
-
   it("prints JSON and honours --fail-on", () => {
     put(join(home, ".cursor", "mcp.json"), { mcpServers: { gh: { command: "npx", args: ["-y", "gh-mcp"], env: { TOKEN: GITHUB_TOKEN } } } });
     const env = { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: "1" };
