@@ -58,6 +58,15 @@ describe("agent config entries", () => {
     expect(JSON.parse(readFileSync(devin.path, "utf8")).mcpServers.toolstile).toEqual(command("devin"));
   });
 
+  it("uses APPDATA for Devin Desktop on Windows", () => {
+    const appdata = join(home, "Roaming");
+    const devin = targets({ home, platform: "win32", env: { APPDATA: appdata } }).find((t) => t.client === "devin")!;
+    expect(devin.path).toBe(join(appdata, "devin", "mcp_config.json"));
+    expect(devin.detected).toBe(false);
+    mkdirSync(join(appdata, "devin"), { recursive: true });
+    expect(targets({ home, platform: "win32", env: { APPDATA: appdata } }).find((t) => t.client === "devin")!.detected).toBe(true);
+  });
+
   it("adds, keeps and removes the entry in a JSON config without touching other keys", () => {
     const t = target("claude-code");
     put(t.path, JSON.stringify({ numStartups: 2, mcpServers: { github: { command: "gh" } } }, null, 2));

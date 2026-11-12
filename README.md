@@ -160,7 +160,7 @@ values) and prints a ready-to-post link. To post the text report instead, add
 | Codex | `$CODEX_HOME/config.toml` (default `~/.codex`) | `.codex/config.toml` |
 | VS Code | user `settings.json` and `mcp.json` | `.vscode/mcp.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | |
-| Devin Desktop | `~/.config/devin/mcp_config.json` | `.devin/mcp_config.json` |
+| Devin Desktop | `~/.config/devin/mcp_config.json` (`%APPDATA%\devin` on Windows) | `.devin/mcp_config.json`, `.devin/mcp_config.local.json` |
 | Gemini CLI | `~/.gemini/settings.json` | `.gemini/settings.json` |
 | Cline | `cline_mcp_settings.json` in VS Code or Cursor storage | |
 
