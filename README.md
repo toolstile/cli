@@ -165,8 +165,9 @@ values) and prints a ready-to-post link. To post the text report instead, add
 
 ## Connect your agents to Toolstile
 
-If you use [Toolstile](https://www.toolstile.com), the CLI can also sign in and set
-up the agents on a machine for you:
+If you use the managed [Toolstile](https://www.toolstile.com) service, the CLI can
+also sign in and set up the agents on a machine for you (self-hosted instances
+use each agent app's own sign-in instead):
 
 ```sh
 npx toolstile auth login
@@ -236,7 +237,9 @@ const { grade, findings } = audit();
 Built by [Akshit Kr Nagpal](https://akshit.io) as part of
 [Toolstile](https://www.toolstile.com), an MCP gateway that keeps upstream
 credentials off your machines and lets you choose which tools each agent can use.
-The audit works on its own and does not require a Toolstile account.
+Toolstile is available as a managed service and as an open-source self-hosted
+edition at [toolstile/toolstile](https://github.com/toolstile/toolstile). The audit
+works on its own and does not require a Toolstile account.
 
 Questions and reports: support@toolstile.com.
 
