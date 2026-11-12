@@ -1,0 +1,3 @@
+peerDependencyRules:
+  allowedVersions:
+    vite: "*"

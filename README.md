@@ -244,6 +244,21 @@ works on its own and does not require a Toolstile account.
 
 Questions and reports: support@toolstile.com.
 
+## Development
+
+Development uses [Vite+](https://viteplus.dev). Its `vp env` shims pick Node.js
+from `.node-version` and pnpm from `packageManager`, so install Vite+, then run:
+
+```sh
+pnpm install
+pnpm typecheck
+pnpm test    # builds dist, then runs the tests with vp test
+pnpm build
+```
+
+Development needs Node.js 22.18+, 24.11+ or 26+. The published CLI still runs on
+Node.js 18 and later.
+
 ## Releases
 
 The npm package is published by [GitHub Actions](.github/workflows/publish.yml)
