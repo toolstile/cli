@@ -1,0 +1,39 @@
+# Runs the same gates as publish.yml on every pull request and on main.
+# Read-only token, no secrets; publishing stays in publish.yml.
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.17.0
+          package-manager-cache: false
+
+      # pnpm comes from Node's bundled corepack at the packageManager version.
+      - run: corepack enable pnpm && pnpm --version
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # pnpm test builds dist first, then runs the unit and CLI tests against it.
+      - run: pnpm test
+      - name: Check the published file list
+        run: npm pack --dry-run
