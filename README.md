@@ -246,14 +246,14 @@ Questions and reports: support@toolstile.com.
 
 ## Development
 
-Development uses [Vite+](https://viteplus.dev). Its `vp env` shims pick Node.js
-from `.node-version` and pnpm from `packageManager`, so install Vite+, then run:
+Development requires [Vite+](https://viteplus.dev) (`vp`). It picks Node.js from
+`.node-version` and pnpm from `packageManager`; run every command through it:
 
 ```sh
-pnpm install
-pnpm typecheck
-pnpm test    # builds dist, then runs the tests with vp test
-pnpm build
+vp install
+vp run typecheck
+vp run test    # builds dist, then runs the tests with vp test
+vp run build
 ```
 
 Development needs Node.js 22.18+, 24.11+ or 26+. The published CLI still runs on
