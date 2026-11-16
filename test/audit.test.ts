@@ -350,7 +350,7 @@ describe("audit", () => {
 });
 
 describe("cli", () => {
-  // `pnpm test` builds first.
+  // `vp run test` builds first.
   const cli = join(import.meta.dirname, "..", "dist", "cli.js");
   it("prints JSON and honours --fail-on", () => {
     put(join(home, ".cursor", "mcp.json"), { mcpServers: { gh: { command: "npx", args: ["-y", "gh-mcp"], env: { TOKEN: GITHUB_TOKEN } } } });

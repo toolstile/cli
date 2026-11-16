@@ -39,8 +39,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build && vp test run",
-    "prepublishOnly": "pnpm typecheck && pnpm test"
+    "test": "vp run build && vp test run",
+    "prepublishOnly": "vp run typecheck && vp run test"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",
