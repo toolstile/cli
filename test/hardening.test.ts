@@ -9,7 +9,7 @@ import { createApi } from "../src/api.js";
 import { loadState, saveState } from "../src/state.js";
 import { withFileLock } from "../src/file-lock.js";
 import { writeEntry, writeText } from "../src/agents.js";
-import { boundedText } from "../src/bounds.js";
+import { MAX_RESPONSE_BYTES, boundedText } from "../src/bounds.js";
 
 afterEach(() => vi.useRealTimers());
 const json = (body: unknown, session?: string) => new Response(JSON.stringify(body), {
@@ -145,13 +145,26 @@ it("rejects oversized SSE events and error bodies without buffering to EOF", asy
   for (const sse of [false, true]) {
     let cancelled = false;
     const p = proxy((async () => new Response(new ReadableStream({
-      start(c) { c.enqueue(new TextEncoder().encode(sse ? `data: ${"x".repeat(1024 * 1024 + 1)}` : "x".repeat(5000))); },
+      start(c) { c.enqueue(new TextEncoder().encode(sse ? `data: ${"x".repeat(MAX_RESPONSE_BYTES + 1)}` : "x".repeat(5000))); },
       cancel() { cancelled = true; },
     }), { status: sse ? 200 : 403, headers: { "content-type": sse ? "text/event-stream" : "text/plain" } })) as typeof fetch);
     p.input.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
     await p.done;
     expect(cancelled).toBe(true);
     expect(p.messages().some((m) => m.id === 1 && m.error)).toBe(true);
+  }
+});
+
+it("relays gateway replies larger than 1 MiB", async () => {
+  const big = "x".repeat(2 * 1024 * 1024);
+  for (const sse of [false, true]) {
+    const reply = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { big } });
+    const p = proxy((async () => new Response(sse ? `data: ${reply}\n\n` : reply, {
+      headers: { "content-type": sse ? "text/event-stream" : "application/json" },
+    })) as typeof fetch);
+    p.input.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+    await p.done;
+    expect(p.messages().find((m) => m.id === 1)?.result).toEqual({ big });
   }
 });
 

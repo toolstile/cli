@@ -17,6 +17,9 @@ export async function deadline<T>(run: (signal: AbortSignal) => Promise<T>, ms: 
   }
 }
 
+/** Largest gateway reply the proxy accepts: one JSON body, SSE line or SSE event. */
+export const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+
 export async function boundedText(response: Response, limit = 1024 * 1024): Promise<string> {
   if (!response.body) return "";
   const reader = response.body.getReader();
