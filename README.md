@@ -174,19 +174,23 @@ values) and prints a ready-to-post link. To post the text report instead, add
 
 If you use [Toolstile](https://www.toolstile.com)
 ([free account](https://app.toolstile.com/auth/sign-up)), the CLI can also sign in
-and set up the agents on a machine for you:
+and set up the agents on a machine for you, in one command:
 
 ```sh
-npx toolstile auth login
-npx toolstile mcp setup
+npx toolstile mcp setup --enable claude-code
 ```
 
-`auth login` prints a link and a code. Open the link on any device with a
-browser (your laptop or phone) and sign in. The page fills in the code and this
-machine's name; edit the name if you like, check the code matches and approve.
-The machine appears under that name in the Toolstile dashboard. Nothing has to
-reach the machine you are signing in, so it works over SSH, in containers and on
-servers without a browser.
+If the machine is not signed in yet, `mcp setup` first prints a link and a code.
+Open the link on any device with a browser (your laptop or phone) and sign in.
+The page fills in the code and this machine's name; edit the name if you like,
+check the code matches and approve. Setup then carries on by itself. The machine
+appears under that name in the Toolstile dashboard. Nothing has to reach the
+machine you are signing in, so it works over SSH, in containers and on servers
+without a browser.
+
+`npx toolstile auth login` runs only the sign-in, the same way. Setup also signs
+in again when the saved sign-in has expired, or when `--server` names a
+different Toolstile address than the one this machine is signed in to.
 
 `mcp setup` lists the agents it finds (Claude Code, Claude Desktop, Cursor,
 Codex, VS Code, Windsurf, Devin Desktop, Gemini CLI, Cline, Grok Build, OpenCode,
@@ -225,8 +229,8 @@ dashboard.
 
 | Option | Command | Meaning |
 | --- | --- | --- |
-| `--server <url>` | `auth login` | Toolstile address (default `https://app.toolstile.com`, or `TOOLSTILE_URL`) |
-| `--no-browser` | `auth login` | Do not try to open a browser on this machine |
+| `--server <url>` | `auth login`, `mcp setup` | Toolstile address (default `https://app.toolstile.com`, or `TOOLSTILE_URL`) |
+| `--no-browser` | `auth login`, `mcp setup` | Do not try to open a browser on this machine |
 | `--enable <agents>` | `mcp setup` | Turn these on without prompting (comma-separated) |
 | `--disable <agents>` | `mcp setup` | Turn these off without prompting |
 | `--workspace <slug>` | `mcp setup` | Workspace the agents use (default: the last one, or personal) |

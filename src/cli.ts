@@ -83,16 +83,21 @@ Usage
   npx toolstile mcp proxy --agent <agent>
 
 setup lists the agents found here and lets you turn each one on or off.
-Each enabled agent gets its own access, shown under this device in the
-Toolstile dashboard. Its config runs \`toolstile mcp proxy\`, which holds the
-agent's token in the CLI's own owner-only credentials file, so no secret
-is written into the agent's config.
+It signs in first, the same way as auth login, when this machine is not
+signed in to the server yet. Each enabled agent gets its own access, shown
+under this device in the Toolstile dashboard. Its config runs
+\`toolstile mcp proxy\`, which holds the agent's token in the CLI's own
+owner-only credentials file, so no secret is written into the agent's config.
 
 Options for setup
   --enable <agents>     Turn these on without prompting (comma-separated)
   --disable <agents>    Turn these off without prompting
   --workspace <slug>    Workspace the agents use (default: the last one, or personal)
   --device-name <name>  Name for this machine (default: its hostname)
+  --server <url>        Toolstile address (default https://app.toolstile.com, or
+                        TOOLSTILE_URL); signs in again if this machine is signed
+                        in to another one
+  --no-browser          Do not try to open a browser when signing in
 
 Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, devin, gemini, cline,
 grok, opencode, kiro, antigravity
@@ -252,7 +257,7 @@ async function command(argv: string[]): Promise<number> {
         : action === "logout"
           ? parseFlags(rest, [], [])
           : action === "setup"
-            ? parseFlags(rest, ["enable", "disable", "workspace", "device-name"], [])
+            ? parseFlags(rest, ["enable", "disable", "workspace", "device-name", "server"], ["no-browser"])
             : parseFlags(rest, ["agent"], []);
     if (flags === "help") {
       process.stdout.write(help);
@@ -267,6 +272,8 @@ async function command(argv: string[]): Promise<number> {
         disable: value("disable"),
         workspace: value("workspace"),
         deviceName: value("device-name"),
+        server: value("server"),
+        browser: !flags["no-browser"],
       });
     return await proxy(ctx, value("agent"));
   } catch (error) {
