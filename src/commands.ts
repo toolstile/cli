@@ -520,10 +520,10 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
   const leftBehind: { name: string; server: string }[] = [];
   /**
    * Removes an agent's authorization on the server that issued it, using that server's sign-in.
-   * A 403 means this account lost access to its workspace, which revokes it; a switch, where the
-   * sign-in there may be another account, treats it as unconfirmed instead (`strict`).
+   * A 403 means this account lost access to its workspace, which revokes it. The sign-in on another
+   * server, or during a switch, may be a different account, so there a 403 is unconfirmed (`strict`).
    */
-  const removeRemote = async (link: AgentLink, name: string, strict = false) => {
+  const removeRemote = async (link: AgentLink, name: string, strict = link.server !== server) => {
     const token = link.server === server ? session.token : state.servers[link.server]?.session?.token;
     if (!token) {
       leftBehind.push({ name, server: link.server });
