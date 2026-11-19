@@ -10,7 +10,11 @@ export type ClientId =
   | "windsurf"
   | "devin"
   | "gemini"
-  | "cline";
+  | "cline"
+  | "grok"
+  | "opencode"
+  | "kiro"
+  | "antigravity";
 
 export interface Location {
   /** Absolute path of the config file. */
@@ -41,6 +45,13 @@ export interface ServerEntry {
   command?: string;
   args: string[];
   env: Record<string, string>;
+  /** The key `env` sits under: `env`, or OpenCode's `environment`. */
+  envKey: string;
+  /**
+   * Where `args` are stored: `args`, or `command` for OpenCode, which keeps the executable and its
+   * arguments in one array, so `args[i]` is `command[i + 1]`.
+   */
+  argsKey: "args" | "command";
   url?: string;
   headers: Record<string, string>;
   /** The config key each header came from: `headers`, or Codex's `http_headers`. */

@@ -71,6 +71,34 @@ describe("audit", () => {
     expect(shareText(r)).not.toContain("github");
   });
 
+  it("reads OpenCode V1 and V2 servers, with env in environment and args in command", () => {
+    put(join(home, ".config", "opencode", "opencode.json"), {
+      mcp: {
+        gh: { type: "local", command: ["npx", "-y", "gh-mcp"], environment: { GITHUB_TOKEN } },
+        timeout: { fetch: 5000 },
+        servers: { docs: { type: "remote", url: "http://docs.example.com/mcp" } },
+      },
+    });
+    const r = run();
+    expect(r.servers).toBe(2);
+    const at = (rule: string) => r.findings.find((f) => f.rule === rule)?.locations[0]?.pointer;
+    expect(at("plaintext-secret")).toBe("mcp.gh.environment.GITHUB_TOKEN");
+    expect(at("unpinned-package")).toBe("mcp.gh.command[2]");
+    expect(at("insecure-transport")).toBe("mcp.servers.docs.url");
+  });
+
+  it("reads Grok Build, Kiro and Antigravity configs, user and project", () => {
+    put(join(home, ".grok", "config.toml"), `[mcp_servers.gh]\ncommand = "gh-mcp"\nenv = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }\n`);
+    put(join(project, ".kiro", "settings", "mcp.json"), { mcpServers: { gh: { command: "gh-mcp", env: { GITHUB_TOKEN } } } });
+    put(join(home, ".gemini", "config", "mcp_config.json"), { mcpServers: { gh: { command: "gh-mcp", env: { GITHUB_TOKEN } } } });
+    put(join(project, ".agents", "mcp_config.json"), { mcpServers: { t: { serverUrl: "https://t.example.com/mcp", headers: { Authorization: API_KEY } } } });
+    const r = run();
+    expect(r.clients.sort()).toEqual(["antigravity", "grok", "kiro"]);
+    expect(r.servers).toBe(4);
+    const titles = r.findings.filter((f) => f.rule === "plaintext-secret").map((f) => f.title).join("\n");
+    for (const name of ["Grok Build", "Kiro", "Antigravity"]) expect(titles).toContain(name);
+  });
+
   it("finds the same secret copied between Claude Code and Codex", () => {
     put(join(home, ".claude.json"), {
       mcpServers: { search: { type: "http", url: "https://search.example.com/mcp", headers: { Authorization: API_KEY } } },

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix, win32 } from "node:path";
 import { argSecrets, classify, urlSecret } from "./secrets.js";
-import { CLIENT_NAMES, pointerJoin, type Discovery } from "./sources.js";
+import { argKeys, CLIENT_NAMES, pointerJoin, type Discovery } from "./sources.js";
 import type { ClientId, Finding, Location, ServerEntry } from "./types.js";
 
 const label = (s: ServerEntry) => `${s.name} (${CLIENT_NAMES[s.client]})`;
@@ -30,7 +30,7 @@ export function secretsOf(s: ServerEntry): Secret[] {
 
   for (const [k, v] of Object.entries(s.env)) {
     const kind = classify(k, v);
-    if (kind) add(v, kind, "env", k);
+    if (kind) add(v, kind, s.envKey, k);
   }
   for (const [k, v] of Object.entries(s.headers)) {
     const kind = classify(k, v);
@@ -40,7 +40,7 @@ export function secretsOf(s: ServerEntry): Secret[] {
     const kind = classify(k, v);
     if (kind) add(v, kind, k);
   }
-  for (const { index, label: kind } of argSecrets(s.args)) add(s.args[index]!, kind, "args", String(index));
+  for (const { index, label: kind } of argSecrets(s.args)) add(s.args[index]!, kind, ...argKeys(s, index));
   if (s.url) {
     const kind = urlSecret(s.url);
     if (kind) add(s.url, kind, "url");
@@ -334,7 +334,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
           pkg.registry === "docker"
             ? `Pin an image digest or exact tag, for example ${pkg.name}:<version>.`
             : `Pin an exact version, for example ${pkg.name}${pkg.registry === "pypi" ? "==" : "@"}<version>.`,
-        locations: [pkg.argIndex >= 0 ? at(s, "args", String(pkg.argIndex)) : at(s, "command")],
+        locations: [pkg.argIndex >= 0 ? at(s, ...argKeys(s, pkg.argIndex)) : at(s, "command")],
         weight: 4,
       });
     }
@@ -351,7 +351,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
           note: [...new Set(risky)].join(", "),
           detail: `The server runs with ${[...new Set(risky)].join(", ")}, which gives it effective control of the host.`,
           fix: "Remove --privileged and the Docker socket mount unless the server truly needs them.",
-          locations: [at(s, "args")],
+          locations: [at(s, s.argsKey)],
           weight: 10,
         });
       }
@@ -367,7 +367,7 @@ export function runChecks(d: Discovery, home: string): Finding[] {
         note: `allowed root ${roots.join(", ")}`,
         detail: `Allowed root ${roots.join(", ")} includes SSH keys, cloud credentials and every other config file.`,
         fix: "Allow only the project folders the agent needs.",
-        locations: [at(s, "args")],
+        locations: [at(s, s.argsKey)],
         weight: 4,
       });
     }

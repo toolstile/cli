@@ -7,7 +7,8 @@ npx toolstile audit
 ```
 
 It reads the configs of Claude Code, Claude Desktop, Cursor, Codex, VS Code,
-Windsurf, Devin Desktop, Gemini CLI and Cline and grades them for:
+Windsurf, Devin Desktop, Gemini CLI, Cline, Grok Build, OpenCode, Kiro and
+Antigravity and grades them for:
 
 | Check | Severity |
 | --- | --- |
@@ -67,13 +68,14 @@ you pick which to apply (space toggles, enter applies):
 
 | Finding | What `--fix` does |
 | --- | --- |
-| Plaintext secret in `env` or a header | Replaces the value with a variable reference in the client's own syntax (`${NAME}` for Claude Code and Gemini CLI, `${env:NAME}` for Cursor, VS Code and Windsurf, `env_vars` / `bearer_token_env_var` / `env_http_headers` for Codex). The value goes into `~/.config/toolstile/secrets.env` (mode 600), and one line in your shell profile (`~/.zshrc`, `~/.bash_profile` or `~/.bashrc`, `~/.profile`, or fish's `conf.d`) loads it. A secret shared by several clients becomes one variable. |
+| Plaintext secret in `env` or a header | Replaces the value with a variable reference in the client's own syntax (`${NAME}` for Claude Code, Gemini CLI, Grok Build and Kiro, `${env:NAME}` for Cursor, VS Code and Windsurf, `{env:NAME}` for OpenCode, `env_vars` / `bearer_token_env_var` / `env_http_headers` for Codex). Kiro asks you to approve each variable the first time it reads one. The value goes into `~/.config/toolstile/secrets.env` (mode 600), and one line in your shell profile (`~/.zshrc`, `~/.bash_profile` or `~/.bashrc`, `~/.profile`, or fish's `conf.d`) loads it. A secret shared by several clients becomes one variable. |
 | Config file with secrets readable by other accounts | `chmod 600` |
 | Unpinned npm or PyPI package | Pins the version that is current now, looked up on npm or PyPI |
 | Rule that approves a whole server, or `enableAllProjectMcpServers` | Removes it. These start unselected, since the agent then asks before each tool. |
 
 Everything else (secrets in arguments or URLs, Claude Desktop and Cline, which
-cannot read variables, Devin Desktop, Windows, `http://` servers, Docker images, broad
+cannot read variables, Antigravity, which documents no variable references,
+Devin Desktop, Windows, `http://` servers, Docker images, broad
 filesystem roots and auto-approve lists) is listed with what to change by hand.
 
 Each edited file is checked before it is written: it must parse to exactly the
@@ -163,6 +165,10 @@ values) and prints a ready-to-post link. To post the text report instead, add
 | Devin Desktop | `~/.config/devin/mcp_config.json` (`%APPDATA%\devin` on Windows) | `.devin/mcp_config.json`, `.devin/mcp_config.local.json` |
 | Gemini CLI | `~/.gemini/settings.json` | `.gemini/settings.json` |
 | Cline | `cline_mcp_settings.json` in VS Code or Cursor storage | |
+| Grok Build | `~/.grok/config.toml` | `.grok/config.toml` |
+| OpenCode | `opencode.json` or `opencode.jsonc` in `$XDG_CONFIG_HOME/opencode` (default `~/.config/opencode`) | `opencode.json(c)`, `.opencode/opencode.json(c)` |
+| Kiro | `~/.kiro/settings/mcp.json` | `.kiro/settings/mcp.json` |
+| Antigravity | `~/.gemini/config/mcp_config.json` (and `~/.gemini/antigravity/mcp_config.json` from releases before 2.0) | `.agents/mcp_config.json` |
 
 ## Connect your agents to Toolstile
 
@@ -183,7 +189,8 @@ reach the machine you are signing in, so it works over SSH, in containers and on
 servers without a browser.
 
 `mcp setup` lists the agents it finds (Claude Code, Claude Desktop, Cursor,
-Codex, VS Code, Windsurf, Devin Desktop, Gemini CLI, Cline) and lets you turn each one on or
+Codex, VS Code, Windsurf, Devin Desktop, Gemini CLI, Cline, Grok Build, OpenCode,
+Kiro, Antigravity) and lets you turn each one on or
 off. Run it again any time to change the selection. Each enabled agent appears
 under this machine in the Toolstile dashboard with its own access, so you can
 grant, limit or revoke it there; then choose which MCP servers it can use.

@@ -39,6 +39,30 @@ beforeEach(() => {
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 describe("audit --fix", () => {
+  it("moves secrets and pins packages in Grok Build, Kiro, OpenCode and Antigravity configs", async () => {
+    const grok = join(home, ".grok", "config.toml");
+    put(grok, `[mcp_servers.gh]\ncommand = "npx"\nargs = ["-y", "gh-mcp"]\n\n[mcp_servers.gh.env]\nGITHUB_TOKEN = "${GITHUB_TOKEN}"\n`);
+    const kiro = join(home, ".kiro", "settings", "mcp.json");
+    put(kiro, { mcpServers: { t: { url: "https://t.example.com/mcp", headers: { Authorization: `Bearer ${BEARER}` } } } });
+    const opencode = join(home, ".config", "opencode", "opencode.json");
+    put(opencode, { mcp: { gh: { type: "local", command: ["npx", "-y", "gh-mcp"], environment: { GITHUB_TOKEN } } } });
+    const antigravity = join(home, ".gemini", "config", "mcp_config.json");
+    put(antigravity, { mcpServers: { gh: { command: "gh-mcp", env: { GITHUB_TOKEN } } } });
+
+    const plan = await planFixes(opts());
+    expect(plan.manual.map((m) => m.reason)).toContain("Antigravity documents no environment variable references in its config");
+    const result = applyFixes(plan, plan.fixes, { home });
+    expect(result.failed).toEqual([]);
+    expect(read(grok)).toBe(`[mcp_servers.gh]\ncommand = "npx"\nargs = [ "-y", "gh-mcp@1.4.2" ]\n\n[mcp_servers.gh.env]\nGITHUB_TOKEN = "\${GITHUB_TOKEN}"\n`);
+    expect(JSON.parse(read(kiro)).mcpServers.t.headers.Authorization).toBe("Bearer ${T_TOKEN}");
+    expect(JSON.parse(read(opencode)).mcp.gh).toEqual({
+      type: "local",
+      command: ["npx", "-y", "gh-mcp@1.4.2"],
+      environment: { GITHUB_TOKEN: "{env:GITHUB_TOKEN}" },
+    });
+    expect(JSON.parse(read(antigravity)).mcpServers.gh.env.GITHUB_TOKEN).toBe(GITHUB_TOKEN);
+  });
+
   it("moves secrets into variables in each client's syntax and keeps everything else", async () => {
     put(join(home, ".claude.json"), {
       numStartups: 3,

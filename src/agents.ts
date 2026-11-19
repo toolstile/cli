@@ -14,13 +14,14 @@ import {
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parseJsonc } from "./parse.js";
-import { appData, CLIENT_NAMES, devinDir } from "./sources.js";
+import { appData, CLIENT_NAMES, devinDir, opencodeDir } from "./sources.js";
 import type { ClientId } from "./types.js";
 
 /** The server name `toolstile mcp setup` adds to each agent's config. */
 export const ENTRY = "toolstile";
 
-type Format = "mcpServers" | "vscode" | "codex";
+/** `toml` is Codex and Grok Build's `[mcp_servers.<name>]`; `opencode` is OpenCode's `mcp` object. */
+type Format = "mcpServers" | "vscode" | "toml" | "opencode";
 
 export interface Target {
   client: ClientId;
@@ -45,24 +46,35 @@ export function targets(opts: TargetEnv): Target[] {
   const code = ["Code", "Code - Insiders"].map((edition) => join(data, edition, "User")).find((dir) => existsSync(dir)) ??
     join(data, "Code", "User");
   const cline = join(code, "globalStorage", "saoudrizwan.claude-dev");
-  const list: [ClientId, string, Format, string][] = [
+  const opencode = opencodeDir(opts);
+  // OpenCode reads opencode.json or opencode.jsonc; setup edits the one the user already has.
+  const opencodeFile = ["opencode.json", "opencode.jsonc"].map((name) => join(opencode, name)).find((path) => existsSync(path)) ??
+    join(opencode, "opencode.json");
+  const gemini = join(home, ".gemini");
+  /** Client, config file, format, and folders whose presence means the app is installed. */
+  const list: [ClientId, string, Format, string | string[]][] = [
     ["claude-code", join(home, ".claude.json"), "mcpServers", join(home, ".claude")],
     ["claude-desktop", join(data, "Claude", "claude_desktop_config.json"), "mcpServers", join(data, "Claude")],
     ["cursor", join(home, ".cursor", "mcp.json"), "mcpServers", join(home, ".cursor")],
-    ["codex", join(codexHome, "config.toml"), "codex", codexHome],
+    ["codex", join(codexHome, "config.toml"), "toml", codexHome],
     ["vscode", join(code, "mcp.json"), "vscode", code],
     ["windsurf", join(home, ".codeium", "windsurf", "mcp_config.json"), "mcpServers", join(home, ".codeium", "windsurf")],
     // Devin Desktop, which replaced the Windsurf editor, reads its own user config.
     ["devin", join(devinDir(opts), "mcp_config.json"), "mcpServers", devinDir(opts)],
     ["gemini", join(home, ".gemini", "settings.json"), "mcpServers", join(home, ".gemini")],
     ["cline", join(cline, "settings", "cline_mcp_settings.json"), "mcpServers", cline],
+    ["grok", join(home, ".grok", "config.toml"), "toml", join(home, ".grok")],
+    ["opencode", opencodeFile, "opencode", opencode],
+    ["kiro", join(home, ".kiro", "settings", "mcp.json"), "mcpServers", join(home, ".kiro")],
+    // The app, IDE and CLI share this file; each keeps its own data folder next to it.
+    ["antigravity", join(gemini, "config", "mcp_config.json"), "mcpServers", [join(gemini, "antigravity"), join(gemini, "antigravity-cli")]],
   ];
-  return list.map(([client, path, format, folder]) => ({
+  return list.map(([client, path, format, folders]) => ({
     client,
     name: CLIENT_NAMES[client],
     path,
     format,
-    detected: existsSync(path) || existsSync(folder),
+    detected: existsSync(path) || [folders].flat().some((folder) => existsSync(folder)),
   }));
 }
 
@@ -76,7 +88,9 @@ export function proxyCommand(client: ClientId, version: string, platform: NodeJS
 /** A config entry for a different, hand-written `toolstile` server is left alone. */
 export function isProxyEntry(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
-  const args = (value as { args?: unknown }).args;
+  // OpenCode keeps the command and its arguments in one array.
+  const { args: list, command } = value as { args?: unknown; command?: unknown };
+  const args = Array.isArray(command) ? command : list;
   return Array.isArray(args) && args.some((a) => typeof a === "string" && /^toolstile(@|$)/.test(a)) &&
     args.includes("proxy");
 }
@@ -133,9 +147,11 @@ function writeTextLocked(link: string, text: string) {
   }
 }
 
-const serversKey = (format: Format) => (format === "vscode" ? "servers" : "mcpServers");
+const serversKey = (format: Format) => (format === "vscode" ? "servers" : format === "opencode" ? "mcp" : "mcpServers");
 
 function jsonEntry(target: Target, command: { command: string; args: string[] }) {
+  // OpenCode's V1 shape, which V2 still reads; V2's own `mcp.servers` would break V1.
+  if (target.format === "opencode") return { type: "local", command: [command.command, ...command.args] };
   return target.format === "vscode" || target.client === "claude-code" ? { type: "stdio", ...command } : command;
 }
 
@@ -177,7 +193,7 @@ export function readEntry(target: Target): unknown {
   const text = readText(target.path);
   if (!text?.trim()) return undefined;
   try {
-    if (target.format === "codex") {
+    if (target.format === "toml") {
       const servers = (parseToml(text) as { mcp_servers?: Record<string, unknown> }).mcp_servers;
       return servers?.[ENTRY];
     }
@@ -204,7 +220,7 @@ export function writeEntry(target: Target, command: { command: string; args: str
 
 function writeEntryLocked(target: Target, command: { command: string; args: string[] } | null): WriteResult {
   const text = readText(target.path) ?? "";
-  if (target.format === "codex") {
+  if (target.format === "toml") {
     let current: Record<string, unknown> | undefined;
     try {
       current = (parseToml(text) as { mcp_servers?: Record<string, unknown> }).mcp_servers;
