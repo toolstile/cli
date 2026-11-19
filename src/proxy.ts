@@ -1,4 +1,4 @@
-import { boundedText, deadline } from "./bounds.js";
+import { MAX_RESPONSE_BYTES, boundedText, deadline } from "./bounds.js";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 
@@ -47,7 +47,7 @@ async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<{ data:
   let lineBytes = 0;
   const append = (part: string) => {
     lineBytes += Buffer.byteLength(part, "utf8");
-    if (lineBytes > 1024 * 1024) throw new Error("SSE line exceeded the size limit");
+    if (lineBytes > MAX_RESPONSE_BYTES) throw new Error("SSE line exceeded the size limit");
     buffer += part;
   };
   for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
@@ -67,7 +67,7 @@ async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<{ data:
         continue;
       }
       eventBytes += Buffer.byteLength(line, "utf8");
-      if (eventBytes > 1024 * 1024) throw new Error("SSE event exceeded the size limit");
+      if (eventBytes > MAX_RESPONSE_BYTES) throw new Error("SSE event exceeded the size limit");
       if (line.startsWith(":")) continue;
       const colon = line.indexOf(":");
       const field = colon === -1 ? line : line.slice(0, colon);
@@ -144,7 +144,7 @@ export function runProxy(options: ProxyOptions): Promise<void> {
     if (closed) return Promise.resolve();
     const text = `${JSON.stringify(message)}\n`;
     const bytes = Buffer.byteLength(text);
-    if (queuedWrites >= 128 || queuedBytes + bytes > 8 * 1024 * 1024) {
+    if (queuedWrites >= 128 || queuedBytes + bytes > 2 * MAX_RESPONSE_BYTES) {
       options.log("Proxy output limit exceeded; closing the connection.");
       stop();
       return Promise.resolve();
@@ -214,7 +214,7 @@ export function runProxy(options: ProxyOptions): Promise<void> {
       return;
     }
     if (type.includes("application/json")) {
-      const body: unknown = JSON.parse(await boundedText(response));
+      const body: unknown = JSON.parse(await boundedText(response, MAX_RESPONSE_BYTES));
       for (const message of Array.isArray(body) ? body : [body]) await take(message);
     }
   }
