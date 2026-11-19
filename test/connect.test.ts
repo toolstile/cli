@@ -152,8 +152,73 @@ describe("agent config entries", () => {
     });
   });
 
+  it("writes Grok Build's TOML like Codex's, keeping other tables", () => {
+    const t = target("grok");
+    expect(t.path).toBe(join(home, ".grok", "config.toml"));
+    expect(t.name).toBe("Grok Build");
+    expect(t.detected).toBe(false);
+    const original = '[ui]\nvim_mode = true\n\n[mcp_servers.github]\ncommand = "gh-mcp"\n';
+    put(t.path, original);
+    expect(target("grok").detected).toBe(true);
+    expect(writeEntry(t, command("grok"))).toBe("added");
+    const text = readFileSync(t.path, "utf8");
+    expect(text.startsWith(original)).toBe(true);
+    expect(text).toContain('[mcp_servers.toolstile]\ncommand = "npx"\nargs = ["-y", "toolstile@0.2.0", "mcp", "proxy", "--agent", "grok"]');
+    expect(writeEntry(t, command("grok"))).toBe("unchanged");
+    expect(writeEntry(t, null)).toBe("removed");
+    expect(readFileSync(t.path, "utf8")).toBe(original);
+  });
+
+  it("writes OpenCode's local server shape next to V1 and V2 servers", () => {
+    const t = target("opencode");
+    expect(t.path).toBe(join(home, ".config", "opencode", "opencode.json"));
+    put(t.path, JSON.stringify({ theme: "x", mcp: { servers: { docs: { type: "remote", url: "https://d.example.com/mcp" } } } }));
+    expect(writeEntry(t, command("opencode"))).toBe("added");
+    const data = JSON.parse(readFileSync(t.path, "utf8"));
+    expect(data.theme).toBe("x");
+    expect(data.mcp.servers.docs).toEqual({ type: "remote", url: "https://d.example.com/mcp" });
+    expect(data.mcp.toolstile).toEqual({
+      type: "local",
+      command: ["npx", "-y", "toolstile@0.2.0", "mcp", "proxy", "--agent", "opencode"],
+    });
+    expect(writeEntry(t, command("opencode"))).toBe("unchanged");
+    expect(writeEntry(t, null)).toBe("removed");
+    expect(JSON.parse(readFileSync(t.path, "utf8")).mcp).toEqual({ servers: { docs: { type: "remote", url: "https://d.example.com/mcp" } } });
+  });
+
+  it("uses an existing opencode.jsonc and XDG_CONFIG_HOME for OpenCode", () => {
+    const config = join(home, "xdg");
+    const find = () => targets({ home, platform: "linux", env: { XDG_CONFIG_HOME: config } }).find((t) => t.client === "opencode")!;
+    expect(find().path).toBe(join(config, "opencode", "opencode.json"));
+    expect(find().detected).toBe(false);
+    put(join(config, "opencode", "opencode.jsonc"), '{\n  // mine\n  "theme": "x"\n}\n');
+    expect(find().path).toBe(join(config, "opencode", "opencode.jsonc"));
+    expect(find().detected).toBe(true);
+    // A file with comments is left to the user, with the snippet to paste.
+    expect(() => writeEntry(find(), command("opencode"))).toThrow(ManualEditError);
+  });
+
+  it("writes Kiro's and Antigravity's user configs", () => {
+    const kiro = target("kiro");
+    expect(kiro.path).toBe(join(home, ".kiro", "settings", "mcp.json"));
+    mkdirSync(join(home, ".kiro"), { recursive: true });
+    expect(target("kiro").detected).toBe(true);
+    expect(writeEntry(kiro, command("kiro"))).toBe("added");
+    expect(JSON.parse(readFileSync(kiro.path, "utf8")).mcpServers.toolstile).toEqual(command("kiro"));
+
+    const antigravity = target("antigravity");
+    expect(antigravity.path).toBe(join(home, ".gemini", "config", "mcp_config.json"));
+    // Gemini CLI shares ~/.gemini, so that folder alone does not mean Antigravity is installed.
+    mkdirSync(join(home, ".gemini"), { recursive: true });
+    expect(target("antigravity").detected).toBe(false);
+    mkdirSync(join(home, ".gemini", "antigravity-cli"));
+    expect(target("antigravity").detected).toBe(true);
+    expect(writeEntry(antigravity, command("antigravity"))).toBe("added");
+    expect(JSON.parse(readFileSync(antigravity.path, "utf8")).mcpServers.toolstile).toEqual(command("antigravity"));
+  });
+
   it("does not report proxy entries as a server duplicated across clients", () => {
-    for (const client of ["claude-code", "cursor", "codex"] as const) writeEntry(target(client), command(client));
+    for (const client of ["claude-code", "cursor", "codex", "grok", "opencode"] as const) writeEntry(target(client), command(client));
     const result = audit({ home, cwd: null, platform: "linux", env: {} });
     expect(result.findings).toEqual([]);
   });

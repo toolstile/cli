@@ -30,8 +30,8 @@ Usage
   npx toolstile audit [options]
 
 Checks Claude Code, Claude Desktop, Cursor, Codex, VS Code, Windsurf,
-Devin Desktop, Gemini CLI and Cline configs for plaintext secrets, credentials copied
-between clients, unpinned packages, auto-approved tools, broad
+Devin Desktop, Gemini CLI, Cline, Grok Build, OpenCode, Kiro and Antigravity
+configs for plaintext secrets, credentials copied between clients, unpinned packages, auto-approved tools, broad
 filesystem access and unencrypted remote servers.
 
 It only reads files. It sends nothing over the network and never
@@ -94,7 +94,8 @@ Options for setup
   --workspace <slug>    Workspace the agents use (default: the last one, or personal)
   --device-name <name>  Name for this machine (default: its hostname)
 
-Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, devin, gemini, cline
+Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, devin, gemini, cline,
+grok, opencode, kiro, antigravity
 `;
 
 function version(): string {

@@ -9,7 +9,7 @@ import { audit } from "./index.js";
 import { parseConfig } from "./parse.js";
 import { checklist } from "./prompt.js";
 import { type Style, tildify, wrap } from "./report.js";
-import { CLIENT_NAMES, discover, pointerJoin, type ScanOptions } from "./sources.js";
+import { argKeys, CLIENT_NAMES, discover, pointerJoin, type ScanOptions } from "./sources.js";
 import { stateDir } from "./state.js";
 import type { ClientId, Severity, ServerEntry } from "./types.js";
 
@@ -75,6 +75,9 @@ const MASK = "••••";
 const REFERENCE: Partial<Record<ClientId, (name: string) => string>> = {
   "claude-code": (name) => `\${${name}}`,
   gemini: (name) => `\${${name}}`,
+  grok: (name) => `\${${name}}`,
+  kiro: (name) => `\${${name}}`,
+  opencode: (name) => `{env:${name}}`,
   cursor: (name) => `\${env:${name}}`,
   windsurf: (name) => `\${env:${name}}`,
   vscode: (name) => `\${env:${name}}`,
@@ -230,12 +233,14 @@ function moveSecret(sec: Secret, names: Names): SecretMove | string {
   if (!ref)
     return s.client === "devin"
       ? "--fix does not move Devin Desktop secrets yet; replace the value with an ${env:NAME} reference by hand"
-      : `${CLIENT_NAMES[s.client]} does not read environment variables in its config`;
-  if (where === "env" && key) {
+      : s.client === "antigravity"
+        ? "Antigravity documents no environment variable references in its config"
+        : `${CLIENT_NAMES[s.client]} does not read environment variables in its config`;
+  if (where === s.envKey && key) {
     const name = names.pick([key, `${server}_${key}`], sec.value);
     if (!name) return "no free variable name";
     return {
-      ops: [{ type: "set", file: s.file, path: at("env", key), value: ref(name), was: sec.value }],
+      ops: [{ type: "set", file: s.file, path: at(s.envKey, key), value: ref(name), was: sec.value }],
       change: { where: pointer, from: `"${MASK}"`, to: `"${ref(name)}"` },
       secret: { name, value: sec.value },
     };
@@ -287,7 +292,8 @@ async function pinPackage(s: ServerEntry, fetcher: typeof fetch): Promise<{ fix:
   const fromFlag = w[pkg.wordIndex - 1] === "--from";
   const spec = pkg.registry === "pypi" && fromFlag ? `${pkg.name}==${version}` : `${pkg.name}@${version}`;
   const before = s.args[pkg.argIndex]!;
-  const pointer = pointerJoin(pointerJoin(s.pointer, "args"), String(pkg.argIndex));
+  const keys = argKeys(s, pkg.argIndex);
+  const pointer = keys.reduce(pointerJoin, s.pointer);
   return {
     looked: true,
     fix: {
@@ -297,7 +303,7 @@ async function pinPackage(s: ServerEntry, fetcher: typeof fetch): Promise<{ fix:
       file: s.file,
       changes: [{ where: pointer, from: `"${before}"`, to: `"${spec}"` }],
       checked: true,
-      ops: [{ type: "set", file: s.file, path: [...s.path, "args", pkg.argIndex], value: spec, was: before }],
+      ops: [{ type: "set", file: s.file, path: [...s.path, keys[0]!, Number(keys[1])], value: spec, was: before }],
       secrets: [],
     },
   };

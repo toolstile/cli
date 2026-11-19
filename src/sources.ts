@@ -11,7 +11,7 @@ export interface ScanOptions {
   env: Record<string, string | undefined>;
 }
 
-type Kind = "mcp" | "claude-json" | "claude-settings" | "codex" | "vscode-settings" | "vscode-mcp";
+type Kind = "mcp" | "claude-json" | "claude-settings" | "toml" | "opencode" | "vscode-settings" | "vscode-mcp";
 
 interface Candidate {
   client: ClientId;
@@ -29,12 +29,21 @@ export const CLIENT_NAMES: Record<ClientId, string> = {
   devin: "Devin Desktop",
   gemini: "Gemini CLI",
   cline: "Cline",
+  grok: "Grok Build",
+  opencode: "OpenCode",
+  kiro: "Kiro",
+  antigravity: "Antigravity",
 };
 
 /** Devin Desktop's user config folder: `%APPDATA%\\devin` on Windows, `~/.config/devin` elsewhere. */
 export function devinDir({ home, platform, env }: Omit<ScanOptions, "cwd">): string {
   if (platform === "win32") return join(env.APPDATA ?? join(home, "AppData", "Roaming"), "devin");
   return join(home, ".config", "devin");
+}
+
+/** OpenCode's global config folder, `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode` on every platform. */
+export function opencodeDir({ home, env }: Omit<ScanOptions, "cwd">): string {
+  return join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "opencode");
 }
 
 export function appData({ home, platform, env }: Omit<ScanOptions, "cwd">): string {
@@ -48,16 +57,24 @@ function candidates(opts: ScanOptions): Candidate[] {
   const data = appData(opts);
   const codexHome = env.CODEX_HOME ?? join(home, ".codex");
   const clineSettings = ["globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"];
+  const opencode = opencodeDir(opts);
 
   const list: Candidate[] = [
     { client: "claude-code", path: join(home, ".claude.json"), kind: "claude-json" },
     { client: "claude-code", path: join(home, ".claude", "settings.json"), kind: "claude-settings" },
     { client: "claude-desktop", path: join(data, "Claude", "claude_desktop_config.json"), kind: "mcp" },
     { client: "cursor", path: join(home, ".cursor", "mcp.json"), kind: "mcp" },
-    { client: "codex", path: join(codexHome, "config.toml"), kind: "codex" },
+    { client: "codex", path: join(codexHome, "config.toml"), kind: "toml" },
     { client: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), kind: "mcp" },
     { client: "devin", path: join(devinDir(opts), "mcp_config.json"), kind: "mcp" },
     { client: "gemini", path: join(home, ".gemini", "settings.json"), kind: "mcp" },
+    { client: "grok", path: join(home, ".grok", "config.toml"), kind: "toml" },
+    { client: "opencode", path: join(opencode, "opencode.json"), kind: "opencode" },
+    { client: "opencode", path: join(opencode, "opencode.jsonc"), kind: "opencode" },
+    { client: "kiro", path: join(home, ".kiro", "settings", "mcp.json"), kind: "mcp" },
+    { client: "antigravity", path: join(home, ".gemini", "config", "mcp_config.json"), kind: "mcp" },
+    // Antigravity releases before 2.0 kept the file here.
+    { client: "antigravity", path: join(home, ".gemini", "antigravity", "mcp_config.json"), kind: "mcp" },
   ];
   for (const edition of ["Code", "Code - Insiders"]) {
     list.push(
@@ -77,9 +94,16 @@ function candidates(opts: ScanOptions): Candidate[] {
       { client: "cursor", path: join(dir, ".cursor", "mcp.json"), kind: "mcp" },
       { client: "vscode", path: join(dir, ".vscode", "mcp.json"), kind: "vscode-mcp" },
       { client: "gemini", path: join(dir, ".gemini", "settings.json"), kind: "mcp" },
-      { client: "codex", path: join(dir, ".codex", "config.toml"), kind: "codex" },
+      { client: "codex", path: join(dir, ".codex", "config.toml"), kind: "toml" },
       { client: "devin", path: join(dir, ".devin", "mcp_config.json"), kind: "mcp" },
       { client: "devin", path: join(dir, ".devin", "mcp_config.local.json"), kind: "mcp" },
+      { client: "grok", path: join(dir, ".grok", "config.toml"), kind: "toml" },
+      { client: "opencode", path: join(dir, "opencode.json"), kind: "opencode" },
+      { client: "opencode", path: join(dir, "opencode.jsonc"), kind: "opencode" },
+      { client: "opencode", path: join(dir, ".opencode", "opencode.json"), kind: "opencode" },
+      { client: "opencode", path: join(dir, ".opencode", "opencode.jsonc"), kind: "opencode" },
+      { client: "kiro", path: join(dir, ".kiro", "settings", "mcp.json"), kind: "mcp" },
+      { client: "antigravity", path: join(dir, ".agents", "mcp_config.json"), kind: "mcp" },
     );
   }
 
@@ -108,8 +132,15 @@ export function pointerJoin(base: string, key: string): string {
   return part.startsWith("[") ? `${base}${part}` : `${base}.${part}`;
 }
 
+/** Keys of `args[index]` below the server object. */
+export const argKeys = (s: ServerEntry, index: number): string[] =>
+  s.argsKey === "command" ? ["command", String(index + 1)] : ["args", String(index)];
+
 function toServer(client: ClientId, file: string, path: string[], name: string, v: unknown): ServerEntry | null {
   if (!isObject(v)) return null;
+  // OpenCode keeps the executable and its arguments in one `command` array, and env in `environment`.
+  const list = Array.isArray(v.command) ? strings(v.command) : null;
+  const envKey = client === "opencode" ? "environment" : "env";
   const extraSecrets: Record<string, string> = {};
   const bearer = str(v.bearer_token);
   if (bearer) extraSecrets.bearer_token = bearer;
@@ -121,9 +152,11 @@ function toServer(client: ClientId, file: string, path: string[], name: string, 
     pointer: path.reduce(pointerJoin, ""),
     path,
     name,
-    command: str(v.command),
-    args: strings(v.args),
-    env: stringRecord(v.env),
+    command: list ? list[0] : str(v.command),
+    args: list ? list.slice(1) : strings(v.args),
+    env: stringRecord(v[envKey]),
+    envKey,
+    argsKey: list ? "command" : "args",
     url: str(v.url) ?? str(v.serverUrl) ?? str(v.httpUrl),
     headers: { ...stringRecord(v.headers), ...stringRecord(v.http_headers) },
     headerKeys,
@@ -140,6 +173,22 @@ function serversAt(client: ClientId, file: string, base: string[], v: unknown): 
     if (server) out.push(server);
   }
   return out;
+}
+
+/**
+ * OpenCode V1 names servers directly under `mcp`; V2 groups them under `mcp.servers`. V2 reads
+ * both, so a file may mix them. Every server has a `type`, which tells a V1 server from settings.
+ */
+function opencodeServers(client: ClientId, file: string, mcp: unknown): ServerEntry[] {
+  if (!isObject(mcp)) return [];
+  const grouped = isObject(mcp.servers) && typeof mcp.servers.type !== "string";
+  const direct = Object.fromEntries(
+    Object.entries(mcp).filter(([name, def]) => !(grouped && name === "servers") && isObject(def) && typeof def.type === "string"),
+  );
+  return [
+    ...serversAt(client, file, ["mcp"], direct),
+    ...(grouped ? serversAt(client, file, ["mcp", "servers"], mcp.servers) : []),
+  ];
 }
 
 function claudeApprovals(file: ConfigFile): ApprovalSetting[] {
@@ -257,8 +306,11 @@ export function discover(opts: ScanOptions): Discovery {
       case "claude-settings":
         result.approvals.push(...claudeApprovals(file));
         break;
-      case "codex":
+      case "toml":
         result.servers.push(...serversAt(c.client, c.path, ["mcp_servers"], data.mcp_servers));
+        break;
+      case "opencode":
+        result.servers.push(...opencodeServers(c.client, c.path, data.mcp));
         break;
       case "vscode-settings":
         if (isObject(data.mcp)) result.servers.push(...serversAt(c.client, c.path, ["mcp", "servers"], data.mcp.servers));
