@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   lstatSync,
@@ -570,7 +571,9 @@ describe("auth and setup", () => {
 
     expect(await logout(ctx)).toBe(0);
     expect(loadState({ home, env: env() }).session).toBeUndefined();
-    await expect(setup(ctx, {})).rejects.toThrow(/auth login/);
+    // Setup signs in again by itself instead of failing.
+    expect(await setup(ctx, {})).toBe(0);
+    expect(loadState({ home, env: env() }).session?.token).toBe("session");
   });
 
   it("keeps tokens on the server that issued them", async () => {
@@ -636,6 +639,207 @@ describe("auth and setup", () => {
     await setup(ctx, { enable: "cursor" });
     expect(calls.filter((c) => c.startsWith("add:"))).toEqual(["add:Cursor", "add:Cursor"]);
     expect(loadState({ home, env: env() }).agents.cursor?.token).toBe("ts_a2");
+  });
+});
+
+describe("setup signs in when needed", () => {
+  const cli = join(import.meta.dirname, "..", "dist", "cli.js");
+
+  /** An API per server that links to its own approval page and records device-code requests. */
+  function servers(api: Api) {
+    const used: string[] = [];
+    const codes: string[] = [];
+    const forServer = (server: string): Api => {
+      used.push(server);
+      return {
+        ...api,
+        deviceCode: async () => {
+          codes.push(server);
+          return {
+            ...(await api.deviceCode()),
+            verification_uri: `${server}/device`,
+            verification_uri_complete: `${server}/device?user_code=ABCDEFGH`,
+          };
+        },
+      };
+    };
+    return { forServer, used, codes };
+  }
+
+  it("signs in, then enables the agent and writes its config in the same run", async () => {
+    mkdirSync(join(home, ".claude"));
+    const { api, calls } = fakeApi();
+    const { ctx, output } = context(api);
+    const opened: string[] = [];
+    ctx.openBrowser = (url) => opened.push(url);
+    expect(await setup(ctx, { enable: "claude-code" })).toBe(0);
+    expect(opened).toEqual(["https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac&next=setup"]);
+    expect(output()).toContain("https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac&next=setup");
+    expect(output()).toContain("Signed in as me@test.invalid.\n");
+    expect(output()).not.toContain("Next:");
+    expect(output()).toContain("+ Claude Code");
+    expect(output()).toContain("Restart Claude Code to pick up the change.");
+    const state = loadState({ home, env: env() });
+    expect(state.session).toMatchObject({ token: "session", server: "https://app.toolstile.com" });
+    expect(state.agents["claude-code"]).toMatchObject({ id: "a1", server: "https://app.toolstile.com" });
+    expect(readEntry(target("claude-code"))).toMatchObject(command("claude-code"));
+    expect(calls).toEqual(["device:build-mac", "add:Claude Code"]);
+  });
+
+  it("honors --no-browser and prefills --device-name", async () => {
+    const { api } = fakeApi();
+    const { ctx, output } = context(api);
+    const opened: string[] = [];
+    ctx.openBrowser = (url) => opened.push(url);
+    expect(await setup(ctx, { enable: "cursor", browser: false, deviceName: "box" })).toBe(0);
+    expect(opened).toEqual([]);
+    expect(output()).toContain("https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=box&next=setup");
+  });
+
+  it("signs in again when the saved session has expired", async () => {
+    const { api, calls } = fakeApi();
+    const { ctx, output } = context(api);
+    await login(ctx, { browser: false });
+    const account = api.account;
+    api.account = async (token) => {
+      if (token === "session") throw new ApiError(401, "Unauthorized");
+      return account(token);
+    };
+    api.deviceToken = async () => ({ access_token: "fresh", expires_in: 1 });
+    const revoked: string[] = [];
+    api.signOut = async (token) => { revoked.push(token); };
+    expect(await setup(ctx, { enable: "cursor" })).toBe(0);
+    expect(output()).toContain("&next=setup");
+    expect(loadState({ home, env: env() }).session?.token).toBe("fresh");
+    expect(loadState({ home, env: env() }).agents.cursor?.id).toBe("a1");
+    expect(revoked).toEqual(["session"]);
+    expect(calls).toContain("add:Cursor");
+  });
+
+  it("signs in to a different --server and sets up the agent there", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    const { forServer, used, codes } = servers(api);
+    ctx.api = forServer;
+    await login(ctx, { browser: false });
+    const revoked: string[] = [];
+    api.signOut = async (token) => { revoked.push(token); };
+    api.deviceToken = async () => ({ access_token: "other-session", expires_in: 1 });
+    expect(await setup(ctx, { enable: "cursor", server: "https://other.example/" })).toBe(0);
+    expect(codes).toEqual(["https://app.toolstile.com", "https://other.example"]);
+    // The old session is signed out where it was issued.
+    expect(used).toContain("https://app.toolstile.com");
+    expect(revoked).toEqual(["session"]);
+    const state = loadState({ home, env: env() });
+    expect(state.server).toBe("https://other.example");
+    expect(state.session).toMatchObject({ token: "other-session", server: "https://other.example" });
+    expect(state.agents.cursor?.server).toBe("https://other.example");
+  });
+
+  it("does not sign in when already signed in to the requested server", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const { api } = fakeApi();
+    const { ctx, output } = context(api);
+    const { forServer, codes } = servers(api);
+    ctx.api = forServer;
+    await login(ctx, { browser: false });
+    // TOOLSTILE_URL only picks the server for a new sign-in; it does not replace a saved session.
+    ctx.env = { ...ctx.env, TOOLSTILE_URL: "https://other.example" };
+    expect(await setup(ctx, { enable: "cursor" })).toBe(0);
+    expect(await setup(ctx, { disable: "cursor", server: "https://app.toolstile.com" })).toBe(0);
+    expect(codes).toEqual(["https://app.toolstile.com"]);
+    expect(output().match(/Signed in as/g)).toHaveLength(1);
+    expect(output()).toContain("Restart Cursor to pick up the change.");
+    // Only removals keep the generic line.
+    expect(output()).toContain("- Cursor\n\nRestart agents that are running to pick up the change.");
+  });
+
+  it("uses TOOLSTILE_URL for a sign-in when there is no session, like auth login", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    const { forServer, codes } = servers(api);
+    ctx.api = forServer;
+    ctx.env = { ...ctx.env, TOOLSTILE_URL: "https://other.example" };
+    expect(await setup(ctx, { enable: "cursor" })).toBe(0);
+    expect(codes).toEqual(["https://other.example"]);
+    expect(loadState({ home, env: env() }).agents.cursor?.server).toBe("https://other.example");
+  });
+
+  it("stops on a denied sign-in and changes nothing", async () => {
+    mkdirSync(join(home, ".cursor"));
+    const { api, calls } = fakeApi({
+      deviceToken: async () => {
+        throw new ApiError(400, "denied", "access_denied");
+      },
+    });
+    const { ctx } = context(api);
+    await expect(setup(ctx, { enable: "cursor" })).rejects.toThrow("Sign-in was denied in the browser.");
+    expect(calls).toEqual([]);
+    expect(readEntry(target("cursor"))).toBeUndefined();
+    expect(() => statSync(statePath({ home, env: env() }))).toThrow();
+  });
+
+  it("checks the agent flags before signing in", async () => {
+    const { api } = fakeApi();
+    const { ctx } = context(api);
+    let asked = false;
+    api.deviceCode = async () => {
+      asked = true;
+      throw new Error("unexpected");
+    };
+    await expect(setup(ctx, { enable: "nope" })).rejects.toThrow(/unknown agent/);
+    expect(asked).toBe(false);
+  });
+
+  it("names every agent it turned on in the restart line", async () => {
+    const { api } = fakeApi();
+    const { ctx, output } = context(api);
+    await login(ctx, { browser: false });
+    await setup(ctx, { enable: "claude-code,codex" });
+    expect(output()).toContain("Restart Claude Code and Codex to pick up the change.");
+    await setup(ctx, { enable: "cursor,windsurf,gemini" });
+    expect(output()).toContain("Restart Cursor, Windsurf and Gemini CLI to pick up the change.");
+  });
+
+  it("keeps auth login's link and closing line as before", async () => {
+    const { api } = fakeApi();
+    const { ctx, output } = context(api);
+    const opened: string[] = [];
+    ctx.openBrowser = (url) => opened.push(url);
+    await login(ctx, { browser: true });
+    expect(opened).toEqual(["https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac"]);
+    expect(output()).not.toContain("next=");
+    expect(output()).toBe(
+      [
+        "Open this link on any device with a browser and approve the sign-in:",
+        "",
+        "  https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac",
+        "",
+        "Check that the page shows this code: ABCD-EFGH",
+        "Waiting for approval. The code expires in 10 minutes.",
+        "",
+        "Signed in as me@test.invalid. Next: toolstile mcp setup",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("accepts --server and --no-browser on the command line", () => {
+    const { TOOLSTILE_URL: _, ...inherited } = process.env;
+    const run = (...args: string[]) =>
+      spawnSync(process.execPath, [cli, "mcp", "setup", ...args], {
+        env: { ...inherited, TOOLSTILE_CONFIG_DIR: join(home, "cfg"), HOME: home },
+        encoding: "utf8",
+      });
+    // Nothing listens on port 9, so the sign-in it starts fails to connect, after parsing.
+    const result = run("--enable", "cursor", "--server", "http://127.0.0.1:9", "--no-browser");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Could not reach http://127.0.0.1:9");
+    expect(run("--server=http://127.0.0.1:9", "--no-browser", "--enable=cursor").stderr).toContain("Could not reach");
+    expect(run("--server").stderr).toContain("--server needs a value");
+    expect(run("--no-browser=1").stderr).toContain("Unknown option");
+    expect(run("--server", "http://example.com").stderr).toContain("--server must use https://");
+    expect(run("--help").stdout).toContain("--no-browser");
   });
 });
 

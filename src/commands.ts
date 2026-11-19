@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import type { Readable, Writable } from "node:stream";
 import type { ReadStream, WriteStream } from "node:tty";
 import { ManualEditError, proxyCommand, readEntry, isProxyEntry, targets, type Target, writeEntry } from "./agents.js";
-import { type Api, ApiError, type Workspace } from "./api.js";
+import { type Account, type Api, ApiError, type Workspace } from "./api.js";
 import { checklist } from "./prompt.js";
 import { runProxy } from "./proxy.js";
 import { type Style, tildify } from "./report.js";
@@ -117,17 +117,33 @@ const machineName = (ctx: Context) => (ctx.hostname ?? hostname)().replace(/\.lo
 
 const formatCode = (code: string) => (code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code);
 
-export async function login(ctx: Context, options: { server?: string; browser: boolean }): Promise<number> {
+/** The server a new sign-in goes to: --server, else TOOLSTILE_URL, else the last one used. */
+const signInServer = (ctx: Context, state: State, server?: string) =>
+  normalizeServer(server ?? ctx.env.TOOLSTILE_URL ?? state.server);
+
+interface SignInOptions {
+  browser: boolean;
+  /** Set when `mcp setup` signs in and then carries on by itself. */
+  next?: "setup";
+  /** Prefilled on the approval page instead of the hostname. */
+  deviceName?: string;
+}
+
+/**
+ * The device-code sign-in shared by `auth login` and `mcp setup`. Saves the new session into
+ * `state` and only then signs the previous session out.
+ */
+async function signIn(ctx: Context, state: State, server: string, options: SignInOptions): Promise<Account> {
   const s = ctx.style;
-  const state = loadState(stateEnv(ctx));
-  const server = normalizeServer(options.server ?? ctx.env.TOOLSTILE_URL ?? state.server);
   const api = ctx.api(server);
   const code = await api.deviceCode();
   // The page fills in the code and this machine's name; the name can be edited there and
   // becomes the device this machine's agents are listed under.
   const link = signInUrl(code.verification_uri_complete, server);
   if (link) {
-    link.searchParams.set("device_name", machineName(ctx));
+    link.searchParams.set("device_name", options.deviceName ?? machineName(ctx));
+    // Tells the page the terminal goes on with setup by itself once this is approved.
+    if (options.next) link.searchParams.set("next", options.next);
     print(ctx, `Open this link on any device with a browser and approve the sign-in:`);
     print(ctx);
     print(ctx, `  ${s.bold(link.href)}`);
@@ -170,10 +186,9 @@ export async function login(ctx: Context, options: { server?: string; browser: b
   }
   const previous = state.session;
   const previousServer = previous?.server ?? state.server;
-  let deviceLabel: string | undefined;
+  let account: Account;
   try {
-    const account = await api.account(token);
-    deviceLabel = account.device?.label;
+    account = await api.account(token);
     if (server !== state.server || (previous && previous.email !== account.email)) {
       // Another account's workspace and device do not apply; agents keep their own access.
       delete state.workspace;
@@ -184,7 +199,7 @@ export async function login(ctx: Context, options: { server?: string; browser: b
     if (account.device) state.device = account.device;
     saveState(state, stateEnv(ctx));
   } catch (error) {
-    await compensate(error, async () => {
+    return compensate(error, async () => {
       // Only discard this sign-in, never the session a concurrent command saved.
       const winner = loadState(stateEnv(ctx)).session;
       if (winner?.token !== token || winner.server !== server) await api.signOut(token);
@@ -193,12 +208,18 @@ export async function login(ctx: Context, options: { server?: string; browser: b
   // End the previous session only after the replacement was safely saved.
   if (previous && (previous.token !== token || previousServer !== server))
     await ctx.api(previousServer).signOut(previous.token).catch(() => undefined);
-  const account = state.session!;
+  const deviceLabel = account.device?.label;
   print(ctx);
   print(
     ctx,
-    `Signed in as ${s.bold(account.email)}${deviceLabel ? ` on ${s.bold(deviceLabel)}` : ""}. Next: ${s.bold("toolstile mcp setup")}`,
+    `Signed in as ${s.bold(state.session!.email)}${deviceLabel ? ` on ${s.bold(deviceLabel)}` : ""}.${options.next ? "" : ` Next: ${s.bold("toolstile mcp setup")}`}`,
   );
+  return account;
+}
+
+export async function login(ctx: Context, options: { server?: string; browser: boolean }): Promise<number> {
+  const state = loadState(stateEnv(ctx));
+  await signIn(ctx, state, signInServer(ctx, state, options.server), { browser: options.browser });
   return 0;
 }
 
@@ -247,7 +268,15 @@ export interface SetupOptions {
   disable?: string;
   workspace?: string;
   deviceName?: string;
+  /** Sign in to this server first unless the saved session is already for it. */
+  server?: string;
+  /** Whether a sign-in started here may open a browser (default true). */
+  browser?: boolean;
 }
+
+/** "A", "A and B", "A, B and C". */
+const listNames = (names: string[]) =>
+  names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : (names[0] ?? "");
 
 async function chooseWorkspace(ctx: Context, state: State, workspaces: Workspace[], wanted?: string) {
   if (wanted) {
@@ -272,19 +301,38 @@ async function chooseWorkspace(ctx: Context, state: State, workspaces: Workspace
 
 export async function setup(ctx: Context, options: SetupOptions): Promise<number> {
   const s = ctx.style;
-  const state = loadState(stateEnv(ctx));
-  const session = state.session;
-  if (!session) throw new UserError("Sign in first: toolstile auth login");
-  const api = ctx.api(session.server ?? state.server);
-  const account = await api.account(session.token).catch((error: unknown) => {
-    if (error instanceof ApiError && error.status === 401)
-      throw new UserError("Your sign-in has expired. Run toolstile auth login again.");
-    throw error;
-  });
+  // Check the flags before any sign-in, so a typo does not cost a trip to the browser.
   const enable = parseClients(options.enable, "--enable");
   const disable = parseClients(options.disable, "--disable");
   const both = enable.find((c) => disable.includes(c));
   if (both) throw new UserError(`${CLIENT_NAMES[both]} is in both --enable and --disable.`);
+  const requested = options.server === undefined ? undefined : normalizeServer(options.server);
+
+  const state = loadState(stateEnv(ctx));
+  let reused: Api | undefined;
+  let account: Account | undefined;
+  const saved = state.session;
+  const savedServer = saved ? (saved.server ?? state.server) : undefined;
+  // Only an explicit --server moves a saved session elsewhere; TOOLSTILE_URL picks the
+  // server for a new sign-in, as it does for auth login.
+  if (saved && savedServer && (!requested || requested === savedServer)) {
+    const candidate = ctx.api(savedServer);
+    // 401: the saved session has expired, so sign in again below.
+    account = await candidate.account(saved.token).catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 401) return undefined;
+      throw error;
+    });
+    if (account) reused = candidate;
+  }
+  if (!account) {
+    account = await signIn(ctx, state, signInServer(ctx, state, requested), {
+      browser: options.browser ?? true,
+      next: "setup",
+      deviceName: options.deviceName,
+    });
+  }
+  const session = state.session!;
+  const api = reused ?? ctx.api(session.server);
 
   // The gateway can be on another host; only an HTTPS URL from this server is used.
   const endpoint = gatewayUrl(account.mcpUrl) ?? `${state.server}/mcp`;
@@ -361,6 +409,7 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
 
   const manual: { target: Target; error: ManualEditError; enable: boolean }[] = [];
   const changes: string[] = [];
+  const turnedOn: string[] = [];
   const replaced: string[] = [];
   for (const target of all) {
     const want = wanted.has(target.client);
@@ -396,7 +445,10 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
       }
       try {
         const result = withCurrentState(state, stateEnv(ctx), () => writeEntry(target, proxyCommand(target.client, ctx.version, ctx.platform)));
-        if (!live(target.client) || result !== "unchanged") changes.push(`${s.bold("+")} ${target.name}  ${s.dim(tildify(target.path, ctx.home))}`);
+        if (!live(target.client) || result !== "unchanged") {
+          changes.push(`${s.bold("+")} ${target.name}  ${s.dim(tildify(target.path, ctx.home))}`);
+          turnedOn.push(target.name);
+        }
         if (result === "replaced")
           replaced.push(target.name);
       } catch (error) {
@@ -433,7 +485,12 @@ export async function setup(ctx: Context, options: SetupOptions): Promise<number
   if (changes.length) {
     for (const line of changes) print(ctx, line);
     print(ctx);
-    print(ctx, "Restart agents that are running to pick up the change.");
+    print(
+      ctx,
+      turnedOn.length
+        ? `Restart ${listNames(turnedOn)} to pick up the change.`
+        : "Restart agents that are running to pick up the change.",
+    );
   } else print(ctx, "Nothing to change.");
   if (replaced.length) {
     print(ctx);
