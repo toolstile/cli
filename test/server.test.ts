@@ -104,6 +104,19 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
     expect(readdirSync(serverHome(ctx))).toEqual([]);
   });
 
+  it("follows redirects only to HTTPS", async () => {
+    const files = release("1.0.0");
+    const fetchVia = (target: string) =>
+      (async (url: string) => {
+        if (url.startsWith("https://releases.test/"))
+          return new Response(null, { status: 302, headers: { location: `${target}/${url.split("/").at(-1)}` } });
+        const file = files[url.split("/").at(-1) as keyof typeof files];
+        return new Response(typeof file === "string" ? file : new Uint8Array(file));
+      }) as typeof fetch;
+    expect(await install(context({}, { fetch: fetchVia("https://storage.test") }).ctx)).toBe("1.0.0");
+    await expect(install(context({}, { fetch: fetchVia("http://storage.test") }).ctx)).rejects.toThrow(/not HTTPS/);
+  });
+
   it("explains a missing release and an unsupported platform", async () => {
     await expect(install(context().ctx)).rejects.toThrow(/was not found/);
     await expect(install(context(release("1.0.0"), { platform: "win32" }).ctx)).rejects.toThrow(/no toolstile-server build for win32-x64/);
@@ -125,7 +138,7 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
     expect(code).toBe(0);
     const exe = executablePath(ctx);
     expect(calls).toEqual([
-      [exe, "init", "--port", "4500", "--data-dir", data],
+      [exe, "init", "--port", "4500", "--origin", "http://127.0.0.1:4500", "--data-dir", data],
       [exe, "bootstrap", "you@example.com", "--data-dir", data],
       [exe, "start", "--data-dir", data],
     ]);
@@ -150,6 +163,17 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
     writeFileSync(join(data, "pglite.owner"), String(process.pid));
     await expect(start(ctx, ["--data-dir", data])).rejects.toThrow(/already running/);
     await expect(upgrade(ctx, ["--data-dir", data])).rejects.toThrow(/Stop the server first/);
+  });
+
+  it("upgrades only an instance it can back up, with the options it knows", async () => {
+    const { ctx } = context(release("1.0.0"));
+    const data = join(home, "instance");
+    mkdirSync(data);
+    writeFileSync(join(data, "instance.json"), "{}");
+    await expect(upgrade(ctx, ["--data-dir", data])).rejects.toThrow(/cannot be backed up first/);
+    expect(existsSync(executablePath(ctx))).toBe(false);
+    await install(ctx);
+    await expect(upgrade(ctx, ["--data-di", data])).rejects.toThrow(/Unknown option: --data-di/);
   });
 
   it("backs up a stopped instance before upgrading", async () => {

@@ -60,7 +60,7 @@ export function downloadBase(ctx: Pick<ServerContext, "env">, release = "latest"
   const custom = ctx.env.TOOLSTILE_SERVER_DOWNLOAD_URL;
   if (custom) {
     const url = new URL(custom);
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(url.hostname)))
+    if (!allowed(url))
       throw new ServerError("TOOLSTILE_SERVER_DOWNLOAD_URL must use https://");
     return url.href.replace(/\/$/, "");
   }
@@ -78,7 +78,14 @@ function runner(ctx: ServerContext) {
         // signal on once: the server treats a second SIGINT as "stop without draining".
         const child = spawn(file, args, { stdio: "inherit", detached: true });
         const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-        const forward = (signal: NodeJS.Signals) => child.kill(signal);
+        // npx also passes Ctrl-C on to this process, so one keypress can arrive twice;
+        // a deliberate second Ctrl-C a moment later still forces the stop.
+        let last = 0;
+        const forward = (signal: NodeJS.Signals) => {
+          if (Date.now() - last < 1000) return;
+          last = Date.now();
+          child.kill(signal);
+        };
         for (const signal of signals) process.on(signal, forward);
         child.once("error", fail);
         child.once("exit", (code, signal) => {
@@ -100,17 +107,35 @@ function capture(file: string, args: string[]): Promise<string> {
   });
 }
 
+/** HTTPS, or HTTP to a loopback host for a local test release. */
+function allowed(url: URL) {
+  return url.protocol === "https:" || (url.protocol === "http:" && /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(url.hostname));
+}
+
 async function get(ctx: ServerContext, url: string): Promise<Response> {
-  let response: Response;
-  try {
-    response = await ctx.fetch(url, { redirect: "follow" });
-  } catch (error) {
-    throw new ServerError(`Could not download ${url}: ${(error as Error).message}`);
+  // Follow redirects here, so every hop (GitHub sends release files to its storage host)
+  // meets the same transport rule as the first.
+  let current = new URL(url);
+  for (let hop = 0; hop < 6; hop++) {
+    if (!allowed(current)) throw new ServerError(`Refusing to download from ${current.origin}: it is not HTTPS`);
+    let response: Response;
+    try {
+      response = await ctx.fetch(current.href, { redirect: "manual" });
+    } catch (error) {
+      throw new ServerError(`Could not download ${url}: ${(error as Error).message}`);
+    }
+    const location = response.headers.get("location");
+    if (response.status >= 300 && response.status < 400 && location) {
+      await response.body?.cancel();
+      current = new URL(location, current);
+      continue;
+    }
+    if (response.status === 404)
+      throw new ServerError(`${url} was not found. Check the release name, or that this release has a build for your platform.`);
+    if (!response.ok || !response.body) throw new ServerError(`Downloading ${url} failed (HTTP ${response.status})`);
+    return response;
   }
-  if (response.status === 404)
-    throw new ServerError(`${url} was not found. Check the release name, or that this release has a build for your platform.`);
-  if (!response.ok || !response.body) throw new ServerError(`Downloading ${url} failed (HTTP ${response.status})`);
-  return response;
+  throw new ServerError(`Downloading ${url} redirected too many times`);
 }
 
 /** Counts bytes through the stream and redraws a progress line on a terminal. */
@@ -120,11 +145,12 @@ function progress(ctx: ServerContext, total: number) {
   return new Transform({
     transform(chunk: Buffer, _encoding, next) {
       seen += chunk.length;
-      const percent = total ? Math.floor((seen / total) * 100) : -1;
-      if (ctx.stderr.isTTY && percent !== shown) {
-        shown = percent;
+      // Redraw each percent, or each megabyte when the size is unknown.
+      const step = total ? Math.floor((seen / total) * 100) : Math.floor(seen / 1048576);
+      if (ctx.stderr.isTTY && step !== shown) {
+        shown = step;
         const mb = (seen / 1048576).toFixed(1);
-        ctx.stderr.write(`\r  ${total ? `${percent}% ` : ""}${mb} MB`);
+        ctx.stderr.write(`\r  ${total ? `${step}% ` : ""}${mb} MB`);
       }
       next(null, chunk);
     },
@@ -239,7 +265,9 @@ export function split(args: string[], names: string[]) {
  */
 export async function start(ctx: ServerContext, args: string[]): Promise<number> {
   const { own, rest: other } = split(args, ["--email", "--data-dir"]);
-  const { forward: initArgs, rest } = split(other, INIT_OPTIONS);
+  const { own: init, forward: initArgs, rest } = split(other, INIT_OPTIONS);
+  // The server's own default origin names port 4310 whatever port it listens on.
+  if (init["--port"] && !init["--origin"]) initArgs.push("--origin", `http://127.0.0.1:${init["--port"]}`);
   const run = runner(ctx);
   const executable = executablePath(ctx);
   if (!existsSync(executable)) await install(ctx);
@@ -274,17 +302,22 @@ function instanceOrigin(directory: string): string | undefined {
 
 /** Install a newer executable after backing up a stopped instance. */
 export async function upgrade(ctx: ServerContext, args: string[]): Promise<number> {
-  const { own, rest } = split(args, ["--release", "--from"]);
+  const { own, rest } = split(args, ["--release", "--from", "--data-dir"]);
+  if (rest.length) throw new ServerError(`Unknown option: ${rest[0]}`);
+  const directory = dataDir(ctx, own["--data-dir"] ? ["--data-dir", own["--data-dir"]] : []);
+  const pid = running(directory);
+  if (pid) throw new ServerError(`Stop the server first (process ${pid}), then upgrade.`);
   const executable = executablePath(ctx);
+  const initialized = existsSync(join(directory, "instance.json"));
   if (!existsSync(executable)) {
+    // Without the executable that wrote the instance there is nothing to back it up with.
+    if (initialized)
+      throw new ServerError(`toolstile-server is not installed here, so ${directory} cannot be backed up first. Back it up with the executable that runs it, then use: npx toolstile server install`);
     await install(ctx, { release: own["--release"], from: own["--from"] });
     return 0;
   }
-  const directory = dataDir(ctx, rest);
-  const pid = running(directory);
-  if (pid) throw new ServerError(`Stop the server first (process ${pid}), then upgrade.`);
   const current = await capture(executable, ["version"]).catch(() => "unknown");
-  if (existsSync(join(directory, "instance.json"))) {
+  if (initialized) {
     const backup = join(serverHome(ctx), "backups", `${new Date().toISOString().replace(/[:.]/g, "-")}-${current.replace(/[^\w.-]/g, "_")}`);
     mkdirSync(join(serverHome(ctx), "backups"), { recursive: true, mode: 0o700 });
     if ((await runner(ctx)(executable, ["backup", backup, "--data-dir", directory])) !== 0)
