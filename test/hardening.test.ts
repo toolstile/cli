@@ -155,8 +155,8 @@ it("rejects oversized SSE events and error bodies without buffering to EOF", asy
   }
 });
 
-it("relays gateway replies larger than 1 MiB", async () => {
-  const big = "x".repeat(2 * 1024 * 1024);
+it("relays gateway replies up to the response limit", async () => {
+  const big = "x".repeat(MAX_RESPONSE_BYTES - 1024);
   for (const sse of [false, true]) {
     const reply = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { big } });
     const p = proxy((async () => new Response(sse ? `data: ${reply}\n\n` : reply, {
