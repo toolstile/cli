@@ -33,10 +33,13 @@ if (child) {
   try {
     fs.writeFileSync(remotePath, JSON.stringify(["old"]));
     const state = loadState(opts);
-    state.session = { token: "fixture", email: "fixture@example.invalid", expiresAt: "2099-01-01", server: state.server };
-    state.workspace = { id: "w", slug: "fixture", name: "Fixture" };
-    state.device = { id: "device", label: "Fixture" };
-    state.agents.cursor = { id: "old", workspaceId: "w", server: state.server, endpoint: state.server + "/mcp", label: "Cursor", token: "fixture-old" };
+    state.servers[state.current] = {
+      edition: "cloud",
+      session: { token: "fixture", email: "fixture@example.invalid", expiresAt: "2099-01-01" },
+      workspace: { id: "w", slug: "fixture", name: "Fixture" },
+      device: { id: "device", label: "Fixture" },
+    };
+    state.agents.cursor = { id: "old", workspaceId: "w", server: state.current, endpoint: state.current + "/mcp", label: "Cursor", token: "fixture-old" };
     saveState(state, opts);
     await setup(ctx, { enable: "cursor" });
     let enabling;

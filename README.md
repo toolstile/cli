@@ -189,8 +189,8 @@ machine you are signing in, so it works over SSH, in containers and on servers
 without a browser.
 
 `npx toolstile auth login` runs only the sign-in, the same way. Setup also signs
-in again when the saved sign-in has expired, or when `--server` names a
-different Toolstile address than the one this machine is signed in to.
+in again when the saved sign-in has expired, or when it targets a server this
+machine is not signed in to yet.
 
 `mcp setup` lists the agents it finds (Claude Code, Claude Desktop, Cursor,
 Codex, VS Code, Windsurf, Devin Desktop, Gemini CLI, Cline, Grok Build, OpenCode,
@@ -223,17 +223,61 @@ folder: `$TOOLSTILE_CONFIG_DIR` when set, otherwise `%APPDATA%\toolstile` on
 Windows and `$XDG_CONFIG_HOME/toolstile` (default `~/.config/toolstile`)
 elsewhere.
 
-`npx toolstile auth logout` ends the CLI's sign-in. Agents you enabled keep
-working until you turn them off with `mcp setup` or delete the device in the
-dashboard.
+`npx toolstile auth logout` ends the CLI's sign-in to the current server. Agents
+you enabled keep working until you turn them off with `mcp setup` or delete the
+device in the dashboard.
+
+### Cloud, self-hosted or local
+
+The `auth` and `mcp` commands work with three kinds of Toolstile server:
+
+| Server | How to pick it |
+| --- | --- |
+| Toolstile Cloud, `https://app.toolstile.com` | The default |
+| A self-hosted server | `--server https://toolstile.example.com` |
+| The self-hosted server on this machine | `--local` |
+
+`--local` uses the `origin` from the server's `instance.json`, in
+`$TOOLSTILE_DATA_DIR` (default `~/.local/share/toolstile`), or
+`http://127.0.0.1:4310` when there is none. The CLI reads only that field; the
+file's keys are never printed or copied. Plain `http://` works only for
+`localhost`, `127.0.0.0/8` and `[::1]`; every other server must use `https://`.
+
+The CLI keeps one sign-in per server. The last server you signed in to is the
+current one. Each command uses `--server` or `--local` when given, then the
+`TOOLSTILE_SERVER` environment variable (`TOOLSTILE_URL` also works), then the
+current server.
+
+```sh
+npx toolstile auth login --local          # sign in to the server on this machine
+npx toolstile mcp setup --enable codex    # set up Codex there, the current server now
+npx toolstile auth status                 # every saved sign-in; * marks the current one
+npx toolstile whoami --server https://app.toolstile.com
+npx toolstile auth logout --all           # sign out everywhere
+```
+
+A self-hosted server has no workspaces, so setup does not ask for one and
+`--workspace` is refused. Each agent uses one server, and agents on one machine
+can use different servers: setup on one server leaves agents that use another
+alone. Turning on an agent that uses another server moves it, so setup asks
+first; without a terminal, add `--switch`. Its access on the old server is
+removed when this machine is still signed in there.
+
+An agent's token is only ever sent to the server that issued it. `mcp proxy`
+ignores `--server`, `--local` and `TOOLSTILE_SERVER`, and never follows a
+redirect.
 
 | Option | Command | Meaning |
 | --- | --- | --- |
-| `--server <url>` | `auth login`, `mcp setup` | Toolstile address (default `https://app.toolstile.com`, or `TOOLSTILE_URL`) |
+| `--server <url>` | `auth login`, `auth logout`, `whoami`, `mcp setup` | Use this server (default: `TOOLSTILE_SERVER`, else the current one) |
+| `--local` | `auth login`, `auth logout`, `whoami`, `mcp setup` | Use the self-hosted server on this machine |
+| `--all` | `auth logout` | Sign out of every server |
+| `--json` | `auth status`, `whoami` | Print JSON |
 | `--no-browser` | `auth login`, `mcp setup` | Do not try to open a browser on this machine |
 | `--enable <agents>` | `mcp setup` | Turn these on without prompting (comma-separated) |
 | `--disable <agents>` | `mcp setup` | Turn these off without prompting |
-| `--workspace <slug>` | `mcp setup` | Workspace the agents use (default: the last one, or personal) |
+| `--switch` | `mcp setup` | Move agents that use another server to this one without asking |
+| `--workspace <slug>` | `mcp setup` | Toolstile Cloud workspace the agents use (default: the last one, or personal) |
 | `--device-name <name>` | `mcp setup` | Name for this machine in the dashboard (default: its hostname) |
 
 ## Use it from code

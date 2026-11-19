@@ -23,6 +23,9 @@ export interface Account {
   email: string;
   name: string;
   expiresAt: string;
+  /** Which kind of server this is. Servers from before this field are Toolstile Cloud. */
+  edition?: "cloud" | "self-hosted";
+  /** Toolstile Cloud workspaces; a self-hosted server returns none. */
   workspaces: Workspace[];
   /** The device named when this sign-in was approved. */
   device?: { id: string; label: string } | null;
@@ -75,7 +78,16 @@ async function request<T>(fetcher: Fetch, url: string, init: RequestInit = {}): 
   });
 }
 
-/** The Toolstile endpoints the CLI uses. Session calls carry the device-flow session token. */
+/** Query parameters, leaving out the ones that are not set. */
+function query(params: Record<string, string | undefined>): string {
+  const defined = Object.entries(params).filter((entry): entry is [string, string] => entry[1] !== undefined);
+  return defined.length ? `?${new URLSearchParams(defined)}` : "";
+}
+
+/**
+ * The Toolstile endpoints the CLI uses. Session calls carry the device-flow session token.
+ * `workspaceId` is for Toolstile Cloud; requests to a self-hosted server leave it out.
+ */
 export function createApi(server: string, fetcher: Fetch = fetch) {
   const base = server.replace(/\/+$/, "");
   const session = (token: string, init: RequestInit = {}): RequestInit => ({
@@ -99,28 +111,28 @@ export function createApi(server: string, fetcher: Fetch = fetch) {
       }),
     account: (token: string) => request<Account>(fetcher, `${base}/api/cli/account`, session(token)),
     signOut: (token: string) => request<void>(fetcher, `${base}/api/cli/sign-out`, session(token, { method: "POST" })),
-    device: (token: string, input: { workspaceId: string; id?: string; label: string; rename?: boolean }) =>
+    device: (token: string, input: { workspaceId?: string; id?: string; label: string; rename?: boolean }) =>
       request<{ id: string; label: string }>(
         fetcher,
         `${base}/api/cli/device`,
         session(token, { method: "POST", body: JSON.stringify(input) }),
       ),
-    agents: (token: string, workspaceId: string, deviceId: string) =>
+    agents: (token: string, workspaceId: string | undefined, deviceId: string) =>
       request<{ agents: { id: string; label: string }[] }>(
         fetcher,
-        `${base}/api/cli/agents?${new URLSearchParams({ workspaceId, deviceId })}`,
+        `${base}/api/cli/agents${query({ workspaceId, deviceId })}`,
         session(token),
       ),
-    addAgent: (token: string, input: { workspaceId: string; deviceId: string; label: string }) =>
+    addAgent: (token: string, input: { workspaceId?: string; deviceId: string; label: string }) =>
       request<{ id: string; label: string; token: string }>(
         fetcher,
         `${base}/api/cli/agents`,
         session(token, { method: "POST", body: JSON.stringify(input) }),
       ),
-    removeAgent: (token: string, workspaceId: string, id: string) =>
+    removeAgent: (token: string, workspaceId: string | undefined, id: string) =>
       request<void>(
         fetcher,
-        `${base}/api/cli/agents/${encodeURIComponent(id)}?${new URLSearchParams({ workspaceId })}`,
+        `${base}/api/cli/agents/${encodeURIComponent(id)}${query({ workspaceId })}`,
         session(token, { method: "DELETE" }),
       ),
   };

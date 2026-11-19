@@ -32,9 +32,12 @@ import { style } from "../src/report.js";
 import { loadState, saveState, statePath } from "../src/state.js";
 
 let home: string;
+const CLOUD = "https://app.toolstile.com";
 const env = () => ({ TOOLSTILE_CONFIG_DIR: join(home, "cfg") });
 const target = (client: string) => targets({ home, platform: "linux", env: {} }).find((t) => t.client === client)!;
 const command = (client: Parameters<typeof proxyCommand>[0]) => proxyCommand(client, "0.2.0", "linux");
+/** The saved entry for one server. */
+const saved = (server = CLOUD) => loadState({ home, env: env() }).servers[server];
 
 function put(path: string, text: string) {
   mkdirSync(dirname(path), { recursive: true });
@@ -228,16 +231,16 @@ describe("agent config entries", () => {
 describe("credentials file", () => {
   it("is owner-only and survives a round trip", () => {
     const state = loadState({ home, env: env() });
-    expect(state.server).toBe("https://app.toolstile.com");
+    expect(state.current).toBe("https://app.toolstile.com");
     state.agents.cursor = { id: "a", workspaceId: "w", server: "https://app.toolstile.com", label: "Cursor", token: "ts_x" };
     saveState(state, { home, env: env() });
     expect(statSync(statePath({ home, env: env() })).mode & 0o777).toBe(0o600);
     expect(statSync(join(home, "cfg")).mode & 0o777).toBe(0o700);
     expect(loadState({ home, env: env() }).agents.cursor?.token).toBe("ts_x");
-    // A project's environment cannot point saved tokens at another server.
-    expect(loadState({ home, env: { ...env(), TOOLSTILE_URL: "https://evil.example" } }).server).toBe(
-      "https://app.toolstile.com",
-    );
+    // The environment picks a server for a command; it never rewrites saved links.
+    const elsewhere = loadState({ home, env: { ...env(), TOOLSTILE_SERVER: "https://evil.example" } });
+    expect(elsewhere.current).toBe("https://app.toolstile.com");
+    expect(elsewhere.agents.cursor?.server).toBe("https://app.toolstile.com");
   });
 
   it("moves a sign-in saved for the old bare-domain address to the app and gateway hosts", () => {
@@ -254,8 +257,10 @@ describe("credentials file", () => {
       }),
     );
     const state = loadState({ home, env: env() });
-    expect(state.server).toBe("https://app.toolstile.com");
-    expect(state.session?.server).toBe("https://app.toolstile.com");
+    expect(state.current).toBe("https://app.toolstile.com");
+    expect(state.servers).toEqual({
+      "https://app.toolstile.com": { session: { token: "s", email: "me@test.invalid", expiresAt: "2030-01-01T00:00:00.000Z" } },
+    });
     expect(state.agents.cursor).toMatchObject({
       server: "https://app.toolstile.com",
       endpoint: "https://mcp.toolstile.com/mcp",
@@ -519,7 +524,7 @@ describe("auth and setup", () => {
     expect(output()).toContain("https://app.toolstile.com/device?user_code=ABCDEFGH&device_name=build-mac");
     expect(output()).toContain("ABCD-EFGH");
     expect(output()).toContain("ABCD-EFGH");
-    expect(loadState({ home, env: env() }).session).toMatchObject({ token: "session", email: "me@test.invalid" });
+    expect(saved()?.session).toMatchObject({ token: "session", email: "me@test.invalid" });
   });
 
   it("adopts the device named on the approval page", async () => {
@@ -538,7 +543,7 @@ describe("auth and setup", () => {
     expect(output()).toContain("on Studio Mac");
     await setup(ctx, { enable: "cursor" });
     expect(calls).toContain("device:Studio Mac");
-    expect(loadState({ home, env: env() }).device).toEqual({ id: "d9", label: "Studio Mac" });
+    expect(saved()?.device).toEqual({ id: "d9", label: "Studio Mac" });
   });
 
   it("reports a denied code", async () => {
@@ -558,7 +563,7 @@ describe("auth and setup", () => {
     await login(ctx, { browser: false });
     expect(await setup(ctx, { enable: "cursor,codex", deviceName: "box" })).toBe(0);
     let state = loadState({ home, env: env() });
-    expect(state.device).toEqual({ id: "d1", label: "box" });
+    expect(state.servers[CLOUD]?.device).toEqual({ id: "d1", label: "box" });
     expect(Object.keys(state.agents).sort()).toEqual(["codex", "cursor"]);
     expect(readEntry(target("cursor"))).toMatchObject({ args: expect.arrayContaining(["cursor"]) });
     expect(calls).toEqual(["device:box", "add:Cursor", "add:Codex"]);
@@ -570,10 +575,10 @@ describe("auth and setup", () => {
     expect(calls.at(-1)).toBe("remove:a1");
 
     expect(await logout(ctx)).toBe(0);
-    expect(loadState({ home, env: env() }).session).toBeUndefined();
+    expect(saved()?.session).toBeUndefined();
     // Setup signs in again by itself instead of failing.
     expect(await setup(ctx, {})).toBe(0);
-    expect(loadState({ home, env: env() }).session?.token).toBe("session");
+    expect(saved()?.session?.token).toBe("session");
   });
 
   it("keeps tokens on the server that issued them", async () => {
@@ -591,19 +596,20 @@ describe("auth and setup", () => {
       });
       return { ...api, deviceCode };
     };
+    const revoked: string[] = [];
+    api.signOut = async (token) => { revoked.push(token); };
     await login(ctx, { browser: false });
     await setup(ctx, { enable: "cursor" });
     ctx.env = { ...ctx.env, TOOLSTILE_URL: "https://other.example" };
+    api.deviceToken = async () => ({ access_token: "other-session", expires_in: 1 });
     await login(ctx, { browser: false });
-    // The old session is signed out where it was issued; the new one belongs to the new server.
-    expect(servers).toEqual([
-      "https://app.toolstile.com",
-      "https://app.toolstile.com",
-      "https://other.example",
-      "https://app.toolstile.com",
-    ]);
+    // Signing in to a second server keeps the first sign-in; each session stays with its server.
+    expect(new Set(servers)).toEqual(new Set(["https://app.toolstile.com", "https://other.example"]));
+    expect(revoked).toEqual([]);
     const state = loadState({ home, env: ctx.env });
-    expect(state.session?.server).toBe("https://other.example");
+    expect(state.current).toBe("https://other.example");
+    expect(state.servers[CLOUD]?.session?.token).toBe("session");
+    expect(state.servers["https://other.example"]?.session?.token).toBe("other-session");
     expect(state.agents.cursor?.server).toBe("https://app.toolstile.com");
   });
 
@@ -680,7 +686,8 @@ describe("setup signs in when needed", () => {
     expect(output()).toContain("+ Claude Code");
     expect(output()).toContain("Restart Claude Code to pick up the change.");
     const state = loadState({ home, env: env() });
-    expect(state.session).toMatchObject({ token: "session", server: "https://app.toolstile.com" });
+    expect(state.current).toBe(CLOUD);
+    expect(state.servers[CLOUD]).toMatchObject({ edition: "cloud", session: { token: "session" } });
     expect(state.agents["claude-code"]).toMatchObject({ id: "a1", server: "https://app.toolstile.com" });
     expect(readEntry(target("claude-code"))).toMatchObject(command("claude-code"));
     expect(calls).toEqual(["device:build-mac", "add:Claude Code"]);
@@ -710,7 +717,7 @@ describe("setup signs in when needed", () => {
     api.signOut = async (token) => { revoked.push(token); };
     expect(await setup(ctx, { enable: "cursor" })).toBe(0);
     expect(output()).toContain("&next=setup");
-    expect(loadState({ home, env: env() }).session?.token).toBe("fresh");
+    expect(saved()?.session?.token).toBe("fresh");
     expect(loadState({ home, env: env() }).agents.cursor?.id).toBe("a1");
     expect(revoked).toEqual(["session"]);
     expect(calls).toContain("add:Cursor");
@@ -727,12 +734,13 @@ describe("setup signs in when needed", () => {
     api.deviceToken = async () => ({ access_token: "other-session", expires_in: 1 });
     expect(await setup(ctx, { enable: "cursor", server: "https://other.example/" })).toBe(0);
     expect(codes).toEqual(["https://app.toolstile.com", "https://other.example"]);
-    // The old session is signed out where it was issued.
-    expect(used).toContain("https://app.toolstile.com");
-    expect(revoked).toEqual(["session"]);
+    expect(used).toContain("https://other.example");
+    // The sign-in to the first server is kept, not signed out.
+    expect(revoked).toEqual([]);
     const state = loadState({ home, env: env() });
-    expect(state.server).toBe("https://other.example");
-    expect(state.session).toMatchObject({ token: "other-session", server: "https://other.example" });
+    expect(state.current).toBe("https://other.example");
+    expect(state.servers["https://other.example"]?.session?.token).toBe("other-session");
+    expect(state.servers[CLOUD]?.session?.token).toBe("session");
     expect(state.agents.cursor?.server).toBe("https://other.example");
   });
 
@@ -743,9 +751,9 @@ describe("setup signs in when needed", () => {
     const { forServer, codes } = servers(api);
     ctx.api = forServer;
     await login(ctx, { browser: false });
-    // TOOLSTILE_URL only picks the server for a new sign-in; it does not replace a saved session.
+    // --server wins over TOOLSTILE_URL, and the saved sign-in for that server is reused.
     ctx.env = { ...ctx.env, TOOLSTILE_URL: "https://other.example" };
-    expect(await setup(ctx, { enable: "cursor" })).toBe(0);
+    expect(await setup(ctx, { enable: "cursor", server: "https://app.toolstile.com/" })).toBe(0);
     expect(await setup(ctx, { disable: "cursor", server: "https://app.toolstile.com" })).toBe(0);
     expect(codes).toEqual(["https://app.toolstile.com"]);
     expect(output().match(/Signed in as/g)).toHaveLength(1);
@@ -754,7 +762,7 @@ describe("setup signs in when needed", () => {
     expect(output()).toContain("- Cursor\n\nRestart agents that are running to pick up the change.");
   });
 
-  it("uses TOOLSTILE_URL for a sign-in when there is no session, like auth login", async () => {
+  it("uses TOOLSTILE_URL for a sign-in, like auth login", async () => {
     const { api } = fakeApi();
     const { ctx } = context(api);
     const { forServer, codes } = servers(api);
@@ -825,7 +833,7 @@ describe("setup signs in when needed", () => {
   });
 
   it("accepts --server and --no-browser on the command line", () => {
-    const { TOOLSTILE_URL: _, ...inherited } = process.env;
+    const { TOOLSTILE_URL: _, TOOLSTILE_SERVER: __, ...inherited } = process.env;
     const run = (...args: string[]) =>
       spawnSync(process.execPath, [cli, "mcp", "setup", ...args], {
         env: { ...inherited, TOOLSTILE_CONFIG_DIR: join(home, "cfg"), HOME: home },
@@ -1109,7 +1117,7 @@ describe("credential operation conflicts", () => {
       expect(agents.has("a1")).toBe(true);
       const created = await add(...args);
       const winner = loadState(opts);
-      winner.device!.label = "concurrent winner";
+      winner.servers[CLOUD]!.device!.label = "concurrent winner";
       saveState(winner, opts);
       return created;
     };
@@ -1117,7 +1125,7 @@ describe("credential operation conflicts", () => {
     expect([...agents.keys()]).toEqual(["a1"]);
     expect(calls).not.toContain("remove:a1");
     expect(loadState(opts).agents.cursor?.id).toBe("a1");
-    expect(loadState(opts).device?.label).toBe("concurrent winner");
+    expect(loadState(opts).servers[CLOUD]?.device?.label).toBe("concurrent winner");
   });
 
   it("does not revoke a newly issued authorization that the winning state already retains", async () => {
@@ -1129,7 +1137,7 @@ describe("credential operation conflicts", () => {
       const created = await add(...args);
       const winner = loadState({ home, env: env() });
       winner.agents.cursor = {
-        ...created, workspaceId: "w1", server: winner.server, endpoint: "https://gateway.invalid/mcp",
+        ...created, workspaceId: "w1", server: winner.current, endpoint: "https://gateway.invalid/mcp",
       };
       saveState(winner, { home, env: env() });
       return created;
@@ -1148,13 +1156,13 @@ describe("credential operation conflicts", () => {
     api.addAgent = async (...args) => {
       const created = await add(...args);
       const winner = loadState({ home, env: env() });
-      winner.device!.label = "winner";
+      winner.servers[CLOUD]!.device!.label = "winner";
       saveState(winner, { home, env: env() });
       return created;
     };
     api.removeAgent = async () => { throw new ApiError(status, "fixture failure"); };
     await expect(setup(ctx, { enable: "cursor" })).rejects.toThrow(status === 404 ? "changed in another command" : "Agent cleanup failed");
-    expect(loadState({ home, env: env() }).device?.label).toBe("winner");
+    expect(saved()?.device?.label).toBe("winner");
     expect(readEntry(target("cursor"))).toBeUndefined();
   });
 
@@ -1168,14 +1176,14 @@ describe("credential operation conflicts", () => {
     const account = api.account;
     api.account = async (token) => {
       const winner = loadState({ home, env: env() });
-      winner.device = { id: "winner", label: "winner" };
+      winner.servers[CLOUD]!.device = { id: "winner", label: "winner" };
       saveState(winner, { home, env: env() });
       return account(token);
     };
     await expect(login(ctx, { browser: false })).rejects.toThrow("changed in another command");
     expect(revoked).toEqual(["losing-session"]);
-    expect(loadState({ home, env: env() }).session?.token).toBe("session");
-    expect(loadState({ home, env: env() }).device?.id).toBe("winner");
+    expect(saved()?.session?.token).toBe("session");
+    expect(saved()?.device?.id).toBe("winner");
   });
 
   it("cleans up an approved login if account lookup fails", async () => {
@@ -1186,7 +1194,7 @@ describe("credential operation conflicts", () => {
     });
     await expect(login(context(api).ctx, { browser: false })).rejects.toThrow("account fixture failed");
     expect(revoked).toEqual(["session"]);
-    expect(loadState({ home, env: env() }).session).toBeUndefined();
+    expect(saved()?.session).toBeUndefined();
   });
 });
 
@@ -1198,7 +1206,7 @@ describe("credential revocation order", () => {
     api.deviceToken = async () => ({ access_token: "replacement", expires_in: 1 });
     const revoked: string[] = [];
     api.signOut = async (token) => {
-      expect(loadState({ home, env: env() }).session?.token).toBe("replacement");
+      expect(saved()?.session?.token).toBe("replacement");
       revoked.push(token);
     };
     await login(ctx, { browser: false });
@@ -1211,12 +1219,12 @@ describe("credential revocation order", () => {
     await login(ctx, { browser: false });
     const revoked: string[] = [];
     api.signOut = async (token) => {
-      expect(loadState({ home, env: env() }).session).toBeUndefined();
+      expect(saved()?.session).toBeUndefined();
       revoked.push(token);
       throw new ApiError(503, "offline fixture");
     };
     expect(await logout(ctx)).toBe(0);
     expect(revoked).toEqual(["session"]);
-    expect(output()).toContain("Signed out on this machine");
+    expect(output()).toContain("Signed out of https://app.toolstile.com on this machine. The server could not be reached");
   });
 });
