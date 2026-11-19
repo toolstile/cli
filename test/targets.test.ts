@@ -661,6 +661,19 @@ describe("agents on several servers", () => {
     expect(errors()).toContain(`Could not confirm removal of the old Cursor authorization (agent-1) at ${CLOUD}.`);
   });
 
+  it("does not treat a 403 from another server as revoked when turning an agent off", async () => {
+    const { local, ctx, cloud } = await cursorOnCloud({ local: true });
+    const routed = network(local, cloud);
+    const { ctx: other } = context(((input: string | URL | Request, init?: RequestInit) =>
+      init?.method === "DELETE" && String(input).startsWith(CLOUD)
+        ? Promise.resolve(Response.json({ message: "Forbidden" }, { status: 403 }))
+        : routed(input, init)) as typeof fetch);
+    await expect(setup({ ...ctx, api: other.api }, { local: true, disable: "cursor" })).rejects.toThrow(
+      `Disabled locally, but remote cleanup failed. Remove Cursor authorization (agent-1) in the Toolstile dashboard at ${CLOUD}.`,
+    );
+    expect(cloud.agents.size).toBe(1);
+  });
+
   it("says where to remove access it could not revoke", async () => {
     const { cloud, ctx, output } = await cursorOnCloud({ local: true });
     await logout(ctx, { server: CLOUD });
