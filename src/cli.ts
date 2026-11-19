@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { createApi } from "./api.js";
 import { renderCard, shareText, shareUrl } from "./card.js";
-import { type Context, login, logout, proxy, setup, UserError } from "./commands.js";
+import { type Context, login, logout, proxy, setup, status, UserError, whoami } from "./commands.js";
 import { runFix } from "./fix.js";
 import { audit } from "./index.js";
 import { redact, renderJson, renderReport, style } from "./report.js";
@@ -17,7 +17,12 @@ Usage
   npx toolstile audit --fix         Review suggested fixes and apply the ones you pick
   npx toolstile auth login          Sign in, from any machine, with a code
   npx toolstile auth logout         Sign out on this machine
+  npx toolstile auth status         List the servers this machine is signed in to
+  npx toolstile whoami              Show the account on the current server
   npx toolstile mcp setup           Choose which agents here use Toolstile
+
+The auth, whoami and mcp commands work with Toolstile Cloud (the default), a
+self-hosted server (--server <url>) or the server on this machine (--local).
 
 Run toolstile <command> --help for a command's options.
   -h, --help          Show this help
@@ -64,16 +69,37 @@ Options
 const AUTH_HELP = `toolstile auth: sign the CLI in to Toolstile
 
 Usage
-  npx toolstile auth login [--server <url>] [--no-browser]
-  npx toolstile auth logout
+  npx toolstile auth login [--server <url> | --local] [--no-browser]
+  npx toolstile auth logout [--server <url> | --local | --all]
+  npx toolstile auth status [--json]
+  npx toolstile whoami [--server <url> | --local] [--json]
 
 login prints a link and a code. Open the link on any device with a browser
 (your laptop, your phone), sign in and approve the code. Nothing has to
 reach this machine, so it works over SSH and on servers without a browser.
 
+The CLI keeps one sign-in per server. The last server you signed in to is the
+current one; commands use it unless --server, --local or TOOLSTILE_SERVER
+picks another. logout signs out of the current server, status lists every
+saved sign-in and whoami shows the account on the current server.
+
+Servers
+  Toolstile Cloud     https://app.toolstile.com (the default)
+  Self-hosted         --server https://toolstile.example.com
+  On this machine     --local: the origin in instance.json in
+                      TOOLSTILE_DATA_DIR (default ~/.local/share/toolstile),
+                      else http://127.0.0.1:4310
+  Plain http:// works only for localhost, 127.0.0.0/8 and [::1].
+
 Options
-  --server <url>      Toolstile address (default https://app.toolstile.com, or TOOLSTILE_URL)
-  --no-browser        Do not try to open a browser on this machine
+  --server <url>      Use this Toolstile server
+  --local             Use the self-hosted server on this machine
+  --no-browser        login: do not try to open a browser on this machine
+  --all               logout: sign out of every server
+  --json              status, whoami: print JSON
+
+Environment
+  TOOLSTILE_SERVER    Server to use when no flag picks one (TOOLSTILE_URL also works)
 `;
 
 const MCP_HELP = `toolstile mcp: connect the agents on this machine to Toolstile
@@ -84,7 +110,8 @@ Usage
 
 setup lists the agents found here and lets you turn each one on or off.
 It signs in first, the same way as auth login, when this machine is not
-signed in to the server yet. Each enabled agent gets its own access, shown
+signed in to the server yet. Each agent uses one server; agents on this
+machine can use different servers. Each enabled agent gets its own access, shown
 under this device in the Toolstile dashboard. Its config runs
 \`toolstile mcp proxy\`, which holds the agent's token in the CLI's own
 owner-only credentials file, so no secret is written into the agent's config.
@@ -92,12 +119,18 @@ owner-only credentials file, so no secret is written into the agent's config.
 Options for setup
   --enable <agents>     Turn these on without prompting (comma-separated)
   --disable <agents>    Turn these off without prompting
-  --workspace <slug>    Workspace the agents use (default: the last one, or personal)
+  --workspace <slug>    Toolstile Cloud workspace the agents use (default: the
+                        last one, or personal); self-hosted servers have none
   --device-name <name>  Name for this machine (default: its hostname)
-  --server <url>        Toolstile address (default https://app.toolstile.com, or
-                        TOOLSTILE_URL); signs in again if this machine is signed
-                        in to another one
+  --server <url>        Use this server (default: the current one, or
+                        TOOLSTILE_SERVER); signs in if needed
+  --local               Use the self-hosted server on this machine
+  --switch              Move agents that use another server to this one
+                        without asking (needed without a terminal)
   --no-browser          Do not try to open a browser when signing in
+
+proxy always talks to the server that issued the agent's token; --server,
+--local and TOOLSTILE_SERVER do not change it.
 
 Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, devin, gemini, cline,
 grok, opencode, kiro, antigravity
@@ -228,7 +261,7 @@ function parseFlags(argv: string[], valued: string[], booleans: string[]) {
 async function command(argv: string[]): Promise<number> {
   const [group, action, ...rest] = argv;
   const help = group === "auth" ? AUTH_HELP : MCP_HELP;
-  const actions = group === "auth" ? ["login", "logout"] : ["setup", "proxy"];
+  const actions = group === "auth" ? ["login", "logout", "status", "whoami"] : ["setup", "proxy"];
   if (!action || action === "-h" || action === "--help" || action === "help") {
     process.stdout.write(help);
     return action ? 0 : 2;
@@ -253,27 +286,35 @@ async function command(argv: string[]): Promise<number> {
   try {
     const flags =
       action === "login"
-        ? parseFlags(rest, ["server"], ["no-browser"])
+        ? parseFlags(rest, ["server"], ["local", "no-browser"])
         : action === "logout"
-          ? parseFlags(rest, [], [])
-          : action === "setup"
-            ? parseFlags(rest, ["enable", "disable", "workspace", "device-name", "server"], ["no-browser"])
-            : parseFlags(rest, ["agent"], []);
+          ? parseFlags(rest, ["server"], ["local", "all"])
+          : action === "status"
+            ? parseFlags(rest, [], ["json"])
+            : action === "whoami"
+              ? parseFlags(rest, ["server"], ["local", "json"])
+              : action === "setup"
+                ? parseFlags(rest, ["enable", "disable", "workspace", "device-name", "server"], ["no-browser", "local", "switch"])
+                : parseFlags(rest, ["agent"], []);
     if (flags === "help") {
       process.stdout.write(help);
       return 0;
     }
     const value = (name: string) => (typeof flags[name] === "string" ? (flags[name] as string) : undefined);
-    if (action === "login") return await login(ctx, { server: value("server"), browser: !flags["no-browser"] });
-    if (action === "logout") return await logout(ctx);
+    const target = { server: value("server"), local: flags.local === true };
+    if (action === "login") return await login(ctx, { ...target, browser: !flags["no-browser"] });
+    if (action === "logout") return await logout(ctx, { ...target, all: flags.all === true });
+    if (action === "status") return status(ctx, { json: flags.json === true });
+    if (action === "whoami") return whoami(ctx, { ...target, json: flags.json === true });
     if (action === "setup")
       return await setup(ctx, {
         enable: value("enable"),
         disable: value("disable"),
         workspace: value("workspace"),
         deviceName: value("device-name"),
-        server: value("server"),
+        ...target,
         browser: !flags["no-browser"],
+        switch: flags.switch === true,
       });
     return await proxy(ctx, value("agent"));
   } catch (error) {
@@ -287,6 +328,7 @@ async function command(argv: string[]): Promise<number> {
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
+  if (argv[0] === "whoami") return command(["auth", ...argv]);
   if (argv[0] === "auth" || argv[0] === "mcp") return command(argv);
   const help = argv[0] === "audit" ? AUDIT_HELP : HELP;
   let args: ReturnType<typeof parseArgs>;

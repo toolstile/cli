@@ -22,6 +22,7 @@ function proxy(fetcher: typeof fetch, output: Writable = new PassThrough()) {
   const done = runProxy({ input, output, fetch: fetcher, endpoint: "https://gateway.invalid/mcp", token: "fixture", log: () => {} });
   return { input, done, messages: () => text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) };
 }
+const cloud = "https://app.toolstile.com";
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 it("rejects null, primitives, empty and mixed batches without losing valid requests", async () => {
@@ -73,10 +74,10 @@ it("rejects stale credentials and a competing config update", () => {
   const opts = { env: { TOOLSTILE_CONFIG_DIR: dir } };
   try {
     const first = loadState(opts), second = loadState(opts);
-    first.device = { id: "one", label: "one" }; saveState(first, opts);
-    second.device = { id: "two", label: "two" };
+    first.servers[cloud] = { device: { id: "one", label: "one" } }; saveState(first, opts);
+    second.servers[cloud] = { device: { id: "two", label: "two" } };
     expect(() => saveState(second, opts)).toThrow("changed in another command");
-    expect(loadState(opts).device?.id).toBe("one");
+    expect(loadState(opts).servers[cloud]?.device?.id).toBe("one");
     const target = { client: "cursor" as const, name: "Cursor", path: join(dir, "mcp.json"), format: "mcpServers" as const, detected: true };
     withFileLock(target.path, () => {
       expect(() => writeEntry(target, { command: "npx", args: ["toolstile", "mcp", "proxy"] })).toThrow("Another command");
@@ -188,11 +189,11 @@ it("detects credentials saved by another process after this command loaded them"
       const { loadState, saveState } = await import(${JSON.stringify(module)});
       const opts = { env: { TOOLSTILE_CONFIG_DIR: ${JSON.stringify(dir)} } };
       const state = loadState(opts);
-      state.device = { id: "other-process", label: "fixture" };
+      state.servers["https://app.toolstile.com"] = { device: { id: "other-process", label: "fixture" } };
       saveState(state, opts);
     `]);
     expect(() => saveState(stale, opts)).toThrow("changed in another command");
-    expect(loadState(opts).device?.id).toBe("other-process");
+    expect(loadState(opts).servers[cloud]?.device?.id).toBe("other-process");
     const config = join(dir, "config.json");
     writeText(config, "first"); writeText(config, "second");
     expect(() => writeText(config, "stale", "first")).toThrow("changed while");
