@@ -138,7 +138,7 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
     expect(code).toBe(0);
     const exe = executablePath(ctx);
     expect(calls).toEqual([
-      [exe, "init", "--port", "4500", "--origin", "http://127.0.0.1:4500", "--data-dir", data],
+      [exe, "init", "--port", "4500", "--data-dir", data],
       [exe, "bootstrap", "you@example.com", "--data-dir", data],
       [exe, "start", "--data-dir", data],
     ]);
@@ -174,6 +174,8 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
     expect(existsSync(executablePath(ctx))).toBe(false);
     await install(ctx);
     await expect(upgrade(ctx, ["--data-di", data])).rejects.toThrow(/Unknown option: --data-di/);
+    await expect(upgrade(ctx, ["--data-dir="])).rejects.toThrow(/--data-dir needs a value/);
+    await expect(upgrade(ctx, ["--from="])).rejects.toThrow(/--from needs a value/);
   });
 
   it("backs up a stopped instance before upgrading", async () => {

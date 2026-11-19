@@ -80,10 +80,12 @@ function runner(ctx: ServerContext) {
         const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
         // npx also passes Ctrl-C on to this process, so one keypress can arrive twice;
         // a deliberate second Ctrl-C a moment later still forces the stop.
-        let last = 0;
+        let interrupted = 0;
         const forward = (signal: NodeJS.Signals) => {
-          if (Date.now() - last < 1000) return;
-          last = Date.now();
+          if (signal === "SIGINT") {
+            if (Date.now() - interrupted < 1000) return;
+            interrupted = Date.now();
+          }
           child.kill(signal);
         };
         for (const signal of signals) process.on(signal, forward);
@@ -251,7 +253,7 @@ export function split(args: string[], names: string[]) {
     const name = eq === -1 ? a : a.slice(0, eq);
     if (names.includes(name)) {
       const value = eq === -1 ? args[++i] : a.slice(eq + 1);
-      if (value === undefined || value.startsWith("-")) throw new ServerError(`${name} needs a value`);
+      if (!value || value.startsWith("-")) throw new ServerError(`${name} needs a value`);
       own[name] = value;
       forward.push(name, value);
     } else rest.push(a);
@@ -265,9 +267,7 @@ export function split(args: string[], names: string[]) {
  */
 export async function start(ctx: ServerContext, args: string[]): Promise<number> {
   const { own, rest: other } = split(args, ["--email", "--data-dir"]);
-  const { own: init, forward: initArgs, rest } = split(other, INIT_OPTIONS);
-  // The server's own default origin names port 4310 whatever port it listens on.
-  if (init["--port"] && !init["--origin"]) initArgs.push("--origin", `http://127.0.0.1:${init["--port"]}`);
+  const { forward: initArgs, rest } = split(other, INIT_OPTIONS);
   const run = runner(ctx);
   const executable = executablePath(ctx);
   if (!existsSync(executable)) await install(ctx);
