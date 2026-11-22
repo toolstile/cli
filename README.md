@@ -280,6 +280,38 @@ redirect.
 | `--workspace <slug>` | `mcp setup` | Toolstile Cloud workspace the agents use (default: the last one, or personal) |
 | `--device-name <name>` | `mcp setup` | Name for this machine in the dashboard (default: its hostname) |
 
+## Run Toolstile on your machine
+
+Toolstile's open-source server runs as one executable with its own embedded
+database: no Docker, database server or Node.js setup. The CLI downloads it,
+checks it against its published SHA-256 checksum and starts it:
+
+```sh
+npx toolstile server start
+```
+
+On a new instance it runs the server at `http://127.0.0.1:4310` until you press
+Ctrl-C and prints a one-time setup link (it works once and expires after 15
+minutes; each start prints a new one until an account exists). Open it, create
+your account and follow the guided setup. Connect Claude Code to your own
+server with:
+
+```sh
+claude mcp add --transport http toolstile http://127.0.0.1:4310/mcp
+```
+
+| Command | What it does |
+| --- | --- |
+| `server start [--email <you@example.com>]` | Installs on first use and initializes a new instance, then runs the server. `--email` prints an invitation link for that address instead, for instances other people reach over the network |
+| `server install [--release <tag>] [--from <file>]` | Installs the latest release, a named one or a file you built |
+| `server upgrade` | Refuses while the server runs; backs up the instance, then installs the latest release and keeps the previous executable |
+| `server uninstall` | Removes the executable; your data and backups stay |
+| `server bootstrap`, `operator`, `backup`, `restore`, `version` | Run the server's own commands |
+
+Builds exist for macOS on Apple silicon and Linux (x64 and arm64). The executable
+lives in `~/.local/share/toolstile-server` (`$TOOLSTILE_SERVER_HOME`), its data in
+`~/.local/share/toolstile` (`--data-dir` or `$TOOLSTILE_DATA_DIR`).
+
 ## Use it from code
 
 ```ts

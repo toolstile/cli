@@ -6,6 +6,7 @@ import { createApi } from "./api.js";
 import { renderCard, shareText, shareUrl } from "./card.js";
 import { type Context, login, logout, proxy, setup, status, UserError, whoami } from "./commands.js";
 import { runFix } from "./fix.js";
+import { install, passthrough, ServerError, split, start, uninstall, upgrade, type ServerContext } from "./server.js";
 import { audit } from "./index.js";
 import { redact, renderJson, renderReport, style } from "./report.js";
 import type { Severity } from "./types.js";
@@ -20,6 +21,7 @@ Usage
   npx toolstile auth status         List the servers this machine is signed in to
   npx toolstile whoami              Show the account on the current server
   npx toolstile mcp setup           Choose which agents here use Toolstile
+  npx toolstile server start        Run your own Toolstile on this machine
 
 The auth, whoami and mcp commands work with Toolstile Cloud (the default), a
 self-hosted server (--server <url>) or the server on this machine (--local).
@@ -134,6 +136,40 @@ proxy always talks to the server that issued the agent's token; --server,
 
 Agents: claude-code, claude-desktop, cursor, codex, vscode, windsurf, devin, gemini, cline,
 grok, opencode, kiro, antigravity
+`;
+
+const SERVER_HELP = `toolstile server: run your own Toolstile on this machine
+
+Usage
+  npx toolstile server start [--email <you@example.com>] [options]
+  npx toolstile server install [--release <tag>] [--from <file>]
+  npx toolstile server upgrade [--release <tag>] [--from <file>]
+  npx toolstile server uninstall
+  npx toolstile server <bootstrap|operator|backup|restore|init|version> ...
+
+start downloads toolstile-server, a single executable with its own database,
+on first use, then runs the server until you press Ctrl-C. A new instance on
+this machine (an http:// origin on localhost, 127.0.0.0/8 or [::1]; the
+default is http://127.0.0.1:4310) prints a one-time setup link: open it,
+create your account and follow the guided setup. For a new instance with any
+other origin, or to invite a specific account, pass --email: start then
+prints an invitation link for it.
+
+upgrade refuses while the server is running, backs up the instance first and
+keeps the executable it replaces. uninstall keeps your data. Other commands
+run toolstile-server directly; see its local operation guide:
+https://github.com/toolstile/toolstile/blob/main/docs/local-operation.md
+
+Options for start
+  --email <address>    Print an invitation link for this account before starting
+  --data-dir <path>    Instance folder (default ~/.local/share/toolstile, or TOOLSTILE_DATA_DIR)
+  --origin <url>       New instance only: its address (default http://127.0.0.1:4310)
+  --listen <address>   New instance only: interface to listen on (default 127.0.0.1)
+  --port <port>        New instance only: port (default 4310)
+
+Options for install and upgrade
+  --release <tag>      A specific release (default: the latest)
+  --from <file>        Install a toolstile-server you built or downloaded yourself
 `;
 
 function version(): string {
@@ -326,10 +362,53 @@ async function command(argv: string[]): Promise<number> {
   }
 }
 
+async function server(argv: string[]): Promise<number> {
+  const [action, ...rest] = argv;
+  if (!action || action === "-h" || action === "--help" || action === "help") {
+    process.stdout.write(SERVER_HELP);
+    return action ? 0 : 2;
+  }
+  if (rest.includes("-h") || rest.includes("--help")) {
+    if (["start", "install", "upgrade", "uninstall"].includes(action)) {
+      process.stdout.write(SERVER_HELP);
+      return 0;
+    }
+  }
+  const ctx: ServerContext = {
+    home: homedir(),
+    env: process.env,
+    platform: process.platform,
+    arch: process.arch,
+    fetch: (...args) => fetch(...args),
+    stdout: process.stdout,
+    stderr: process.stderr,
+    style: style(process.stderr.isTTY === true && !process.env.NO_COLOR),
+  };
+  try {
+    if (action === "start") return await start(ctx, rest);
+    if (action === "install") {
+      const { own, rest: unknown } = split(rest, ["--release", "--from"]);
+      if (unknown.length) throw new ServerError(`Unknown option: ${unknown[0]}`);
+      await install(ctx, { release: own["--release"], from: own["--from"] });
+      return 0;
+    }
+    if (action === "upgrade") return await upgrade(ctx, rest);
+    if (action === "uninstall") return uninstall(ctx);
+    return await passthrough(ctx, argv);
+  } catch (error) {
+    if (error instanceof ServerError) {
+      process.stderr.write(`toolstile: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   if (argv[0] === "whoami") return command(["auth", ...argv]);
   if (argv[0] === "auth" || argv[0] === "mcp") return command(argv);
+  if (argv[0] === "server") return server(argv.slice(1));
   const help = argv[0] === "audit" ? AUDIT_HELP : HELP;
   let args: ReturnType<typeof parseArgs>;
   try {
