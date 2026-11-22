@@ -7,6 +7,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createBrotliDecompress } from "node:zlib";
 import type { Style } from "./report.js";
+import { isLoopback } from "./servers.js";
 
 /** Where release executables are published; `TOOLSTILE_SERVER_DOWNLOAD_URL` replaces it. */
 export const RELEASES = "https://github.com/toolstile/toolstile/releases";
@@ -20,7 +21,6 @@ export interface ServerContext {
   platform: NodeJS.Platform;
   arch: string;
   fetch: typeof fetch;
-  stdin: NodeJS.ReadableStream & { isTTY?: boolean };
   stdout: NodeJS.WritableStream & { isTTY?: boolean };
   stderr: NodeJS.WritableStream & { isTTY?: boolean };
   style: Style;
@@ -272,15 +272,18 @@ export async function start(ctx: ServerContext, args: string[]): Promise<number>
   } else if (initArgs.length)
     throw new ServerError(`${directory} is already initialized; --origin, --listen and --port apply only to a new instance.`);
   const origin = instanceOrigin(directory);
+  const loopback = origin !== undefined && isLoopbackOrigin(origin);
   if (email) {
     if ((await run(executable, ["bootstrap", email, ...data])) !== 0) return 1;
     say(ctx, ctx.style.dim("Open the invitation link once the server is listening, then create your account."));
-  } else if (fresh && !(origin && isLoopbackOrigin(origin))) {
+  } else if (fresh && !loopback) {
     // A loopback instance prints its own one-time setup link when it starts with no accounts.
-    say(ctx, "Invite the first account with: npx toolstile server bootstrap you@example.com");
+    // bootstrap needs the database the running server holds, so it has to run before start.
+    const dir = own["--data-dir"] ? ` --data-dir ${own["--data-dir"]}` : "";
+    say(ctx, `No account exists yet. Stop the server (Ctrl-C), then run: npx toolstile server start --email you@example.com${dir}`);
   }
   // On a new loopback instance the server prints this line with its setup link.
-  if (origin && !(fresh && isLoopbackOrigin(origin)))
+  if (origin && !(fresh && loopback))
     say(ctx, `Connect Claude Code: claude mcp add --transport http toolstile ${origin}/mcp`);
   return run(executable, ["start", ...rest, ...data]);
 }
@@ -289,8 +292,7 @@ export async function start(ctx: ServerContext, args: string[]): Promise<number>
 export function isLoopbackOrigin(origin: string): boolean {
   try {
     const url = new URL(origin);
-    const host = url.hostname;
-    return url.protocol === "http:" && (host === "localhost" || host === "[::1]" || /^127(\.\d{1,3}){3}$/.test(host));
+    return url.protocol === "http:" && isLoopback(url.hostname);
   } catch {
     return false;
   }

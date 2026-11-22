@@ -148,9 +148,11 @@ Usage
   npx toolstile server <bootstrap|operator|backup|restore|init|version> ...
 
 start downloads toolstile-server, a single executable with its own database,
-on first use. On a new instance it asks for your email and prints an
-invitation link, then runs the server until you press Ctrl-C. Open the link,
-create your account and follow the guided setup.
+on first use, then runs the server until you press Ctrl-C. A new instance on
+this machine (the default http://127.0.0.1:4310) prints a one-time setup link:
+open it, create your account and follow the guided setup. For a new instance
+with another address, or to invite a specific account, pass --email: start
+then prints an invitation link for it.
 
 upgrade refuses while the server is running, backs up the instance first and
 keeps the executable it replaces. uninstall keeps your data. Other commands
@@ -158,7 +160,7 @@ run toolstile-server directly; see its local operation guide:
 https://github.com/toolstile/toolstile/blob/main/docs/local-operation.md
 
 Options for start
-  --email <address>    Invite this account without asking
+  --email <address>    Print an invitation link for this account before starting
   --data-dir <path>    Instance folder (default ~/.local/share/toolstile, or TOOLSTILE_DATA_DIR)
   --origin <url>       New instance only: its address (default http://127.0.0.1:4310)
   --listen <address>   New instance only: interface to listen on (default 127.0.0.1)
@@ -377,7 +379,6 @@ async function server(argv: string[]): Promise<number> {
     platform: process.platform,
     arch: process.arch,
     fetch: (...args) => fetch(...args),
-    stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,
     style: style(process.stderr.isTTY === true && !process.env.NO_COLOR),

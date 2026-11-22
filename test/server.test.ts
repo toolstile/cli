@@ -46,7 +46,6 @@ function context(files: Record<string, Buffer | string> = {}, overrides: Partial
       const file = files[url.replace("https://releases.test/v1/", "")];
       return file === undefined ? new Response("missing", { status: 404 }) : new Response(typeof file === "string" ? file : new Uint8Array(file));
     }) as typeof fetch,
-    stdin: new PassThrough(),
     stdout: new PassThrough(),
     stderr,
     style: style(false),
@@ -173,7 +172,7 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
       return run!(file, args);
     };
     expect(await start(ctx, ["--data-dir", data])).toBe(0);
-    expect(stderr()).toMatch(/server bootstrap you@example.com/);
+    expect(stderr()).toMatch(/server start --email you@example.com/);
     expect(stderr()).toMatch(/Connect Claude Code: .*https:\/\/tools.example.com\/mcp/);
   });
 
