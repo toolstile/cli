@@ -12,6 +12,7 @@ import {
   executablePath,
   install,
   isLoopbackOrigin,
+  shellQuote,
   type ServerContext,
   ServerError,
   serverHome,
@@ -160,9 +161,9 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
     expect(stderr()).not.toMatch(/bootstrap|Connect Claude Code/);
   });
 
-  it("points a new non-loopback instance at bootstrap", async () => {
+  it("points a new non-loopback instance at start --email with a quoted folder", async () => {
     const { ctx, stderr } = context(release("1.0.0"));
-    const data = join(home, "instance");
+    const data = join(home, "Toolstile Data");
     const run = ctx.run;
     ctx.run = async (file, args) => {
       if (args[0] === "init") {
@@ -172,8 +173,14 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
       return run!(file, args);
     };
     expect(await start(ctx, ["--data-dir", data])).toBe(0);
-    expect(stderr()).toMatch(/server start --email you@example.com/);
+    expect(stderr()).toContain(`npx toolstile server start --email you@example.com --data-dir '${data}'`);
     expect(stderr()).toMatch(/Connect Claude Code: .*https:\/\/tools.example.com\/mcp/);
+  });
+
+  it("quotes paths for the shell", () => {
+    expect(shellQuote("/tmp/toolstile-data")).toBe("/tmp/toolstile-data");
+    expect(shellQuote("/tmp/Toolstile Data")).toBe("'/tmp/Toolstile Data'");
+    expect(shellQuote("/tmp/it's")).toBe("'/tmp/it'\\''s'");
   });
 
   it("recognizes loopback origins", () => {

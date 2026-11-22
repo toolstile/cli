@@ -279,7 +279,7 @@ export async function start(ctx: ServerContext, args: string[]): Promise<number>
   } else if (fresh && !loopback) {
     // A loopback instance prints its own one-time setup link when it starts with no accounts.
     // bootstrap needs the database the running server holds, so it has to run before start.
-    const dir = own["--data-dir"] ? ` --data-dir ${own["--data-dir"]}` : "";
+    const dir = own["--data-dir"] ? ` --data-dir ${shellQuote(directory)}` : "";
     say(ctx, `No account exists yet. Stop the server (Ctrl-C), then run: npx toolstile server start --email you@example.com${dir}`);
   }
   // On a new loopback instance the server prints this line with its setup link.
@@ -287,6 +287,10 @@ export async function start(ctx: ServerContext, args: string[]): Promise<number>
     say(ctx, `Connect Claude Code: claude mcp add --transport http toolstile ${origin}/mcp`);
   return run(executable, ["start", ...rest, ...data]);
 }
+
+/** Quotes a path for a POSIX shell (the server runs on macOS and Linux only). */
+export const shellQuote = (value: string) =>
+  /^[\w./~-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 
 /** True for `http://` origins on 127.0.0.0/8, `localhost` or `[::1]`. */
 export function isLoopbackOrigin(origin: string): boolean {

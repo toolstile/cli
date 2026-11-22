@@ -149,10 +149,11 @@ Usage
 
 start downloads toolstile-server, a single executable with its own database,
 on first use, then runs the server until you press Ctrl-C. A new instance on
-this machine (the default http://127.0.0.1:4310) prints a one-time setup link:
-open it, create your account and follow the guided setup. For a new instance
-with another address, or to invite a specific account, pass --email: start
-then prints an invitation link for it.
+this machine (an http:// origin on localhost, 127.0.0.0/8 or [::1]; the
+default is http://127.0.0.1:4310) prints a one-time setup link: open it,
+create your account and follow the guided setup. For a new instance with any
+other origin, or to invite a specific account, pass --email: start then
+prints an invitation link for it.
 
 upgrade refuses while the server is running, backs up the instance first and
 keeps the executable it replaces. uninstall keeps your data. Other commands
