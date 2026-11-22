@@ -11,6 +11,7 @@ import {
   downloadBase,
   executablePath,
   install,
+  isLoopbackOrigin,
   type ServerContext,
   ServerError,
   serverHome,
@@ -142,6 +143,46 @@ describe.skipIf(process.platform === "win32")("toolstile server", () => {
       [exe, "bootstrap", "you@example.com", "--data-dir", data],
       [exe, "start", "--data-dir", data],
     ]);
+  });
+
+  it("leaves the first account to the server's setup link on a new loopback instance", async () => {
+    const { ctx, calls, stderr } = context(release("1.0.0"));
+    const data = join(home, "instance");
+    const run = ctx.run;
+    ctx.run = async (file, args) => {
+      if (args[0] === "init") {
+        mkdirSync(data, { recursive: true });
+        writeFileSync(join(data, "instance.json"), JSON.stringify({ origin: "http://127.0.0.1:4310" }));
+      }
+      return run!(file, args);
+    };
+    expect(await start(ctx, ["--data-dir", data])).toBe(0);
+    expect(calls.map((c) => c[1])).toEqual(["init", "start"]);
+    expect(stderr()).not.toMatch(/bootstrap|Connect Claude Code/);
+  });
+
+  it("points a new non-loopback instance at bootstrap", async () => {
+    const { ctx, stderr } = context(release("1.0.0"));
+    const data = join(home, "instance");
+    const run = ctx.run;
+    ctx.run = async (file, args) => {
+      if (args[0] === "init") {
+        mkdirSync(data, { recursive: true });
+        writeFileSync(join(data, "instance.json"), JSON.stringify({ origin: "https://tools.example.com" }));
+      }
+      return run!(file, args);
+    };
+    expect(await start(ctx, ["--data-dir", data])).toBe(0);
+    expect(stderr()).toMatch(/server bootstrap you@example.com/);
+    expect(stderr()).toMatch(/Connect Claude Code: .*https:\/\/tools.example.com\/mcp/);
+  });
+
+  it("recognizes loopback origins", () => {
+    expect(isLoopbackOrigin("http://127.0.0.1:4310")).toBe(true);
+    expect(isLoopbackOrigin("http://localhost:4310")).toBe(true);
+    expect(isLoopbackOrigin("http://[::1]:4310")).toBe(true);
+    expect(isLoopbackOrigin("https://127.0.0.1:4310")).toBe(false);
+    expect(isLoopbackOrigin("http://192.168.1.2:4310")).toBe(false);
   });
 
   it("starts an existing instance without initializing it again", async () => {

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createBrotliDecompress } from "node:zlib";
@@ -230,15 +229,6 @@ export function running(directory: string): number | undefined {
   }
 }
 
-async function ask(ctx: ServerContext, question: string): Promise<string> {
-  const lines = createInterface({ input: ctx.stdin, output: ctx.stderr });
-  try {
-    return await new Promise<string>((done) => lines.question(question, (answer) => done(answer.trim())));
-  } finally {
-    lines.close();
-  }
-}
-
 /** Options only `init` reads; `start` passes them on when it creates the instance. */
 const INIT_OPTIONS = ["--origin", "--listen", "--port"];
 
@@ -275,20 +265,35 @@ export async function start(ctx: ServerContext, args: string[]): Promise<number>
   const pid = running(directory);
   if (pid) throw new ServerError(`The instance in ${directory} is already running (process ${pid})`);
   const data = ["--data-dir", directory];
-  let email = own["--email"];
-  if (!existsSync(join(directory, "instance.json"))) {
+  const email = own["--email"];
+  const fresh = !existsSync(join(directory, "instance.json"));
+  if (fresh) {
     if ((await run(executable, ["init", ...initArgs, ...data])) !== 0) return 1;
-    if (!email && ctx.stdin.isTTY) email = await ask(ctx, "Email for your account (enter to skip): ");
-    if (!email) say(ctx, "Invite an account later with: npx toolstile server bootstrap you@example.com");
   } else if (initArgs.length)
     throw new ServerError(`${directory} is already initialized; --origin, --listen and --port apply only to a new instance.`);
+  const origin = instanceOrigin(directory);
   if (email) {
     if ((await run(executable, ["bootstrap", email, ...data])) !== 0) return 1;
     say(ctx, ctx.style.dim("Open the invitation link once the server is listening, then create your account."));
+  } else if (fresh && !(origin && isLoopbackOrigin(origin))) {
+    // A loopback instance prints its own one-time setup link when it starts with no accounts.
+    say(ctx, "Invite the first account with: npx toolstile server bootstrap you@example.com");
   }
-  const origin = instanceOrigin(directory);
-  if (origin) say(ctx, `Connect Claude Code: claude mcp add --transport http toolstile ${origin}/mcp`);
+  // On a new loopback instance the server prints this line with its setup link.
+  if (origin && !(fresh && isLoopbackOrigin(origin)))
+    say(ctx, `Connect Claude Code: claude mcp add --transport http toolstile ${origin}/mcp`);
   return run(executable, ["start", ...rest, ...data]);
+}
+
+/** True for `http://` origins on 127.0.0.0/8, `localhost` or `[::1]`. */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+    return url.protocol === "http:" && (host === "localhost" || host === "[::1]" || /^127(\.\d{1,3}){3}$/.test(host));
+  } catch {
+    return false;
+  }
 }
 
 function instanceOrigin(directory: string): string | undefined {
